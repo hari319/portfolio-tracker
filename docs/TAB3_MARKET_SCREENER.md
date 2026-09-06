@@ -12,7 +12,7 @@ The **Screener** tab scans the broad Indian market (>3,400 NSE stocks) using qua
   * You do **not** need to manually copy or paste nonces. The token is valid for 12–24 hours and is refreshed automatically when a new day arrives or if an existing token expires mid-session (401/403).
   * An optional **Nonce Settings** panel is available if you ever wish to inspect the active token or provide a manual override.
 * **Date Picker**: Choose between **Today / Latest** (default payload: `""`) or select any of the past 11 trading days (`"YYYY-MM-DD"`).
-* **Local Persistence**: Every fetched dataset is saved on disk under `data/screener/screener_<DATE>.json` and indexed in `data/screener_cache.json`. Previously downloaded dates can be re-inspected instantly without network calls.
+* **Local Persistence**: Every fetched dataset is saved into `data/screener_cache.db` with a high-performance hybrid schema (15 promoted hot columns for instant multi-day indexing + complete JSON payload for cold columns). Active nonces and metadata are maintained in `data/screener_cache.json`. Previously downloaded dates can be re-inspected instantly without network calls.
 
 ---
 
@@ -31,7 +31,7 @@ The **Screener** tab scans the broad Indian market (>3,400 NSE stocks) using qua
 Single-day screening only reveals *what happened today*. The **Multi-Day Sequence Analyzer** tracks the chronological progression across up to 11 trading sessions ($T_{-10} \dots T_0$) to identify stocks **before** they stage explosive multi-day runs.
 
 ### One-Click History Sync
-* Click **`[⚡ Sync History]`** in the screener header. The backend automatically downloads and caches all available past trading dates into `data/screener/`.
+* Click **`[⚡ Sync History]`** in the screener header. The backend automatically downloads and writes missing historical dates directly into `data/screener_cache.db`. Consecutive queries execute in sub-milliseconds over SQLite indexed columns.
 
 ### Computed Trajectory Indicators:
 1. **Accumulation Score (0–100)**: Quantifies institutional accumulation by scoring consecutive rising delivery volume, range position consistency, and flat base coiling.

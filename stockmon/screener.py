@@ -1,19 +1,23 @@
-"""Screener service for fetching and caching bigbreakingwire market screener data."""
+"""Screener service for fetching and caching bigbreakingwire market screener data.
+
+Persistence now uses SQLite via ``stockmon.db.repositories.screener`` for
+all screener day/row data.  The nonce cache remains in ``screener_cache.json``
+as it is tiny, transient, and needed before the DB is relevant.
+"""
 
 from __future__ import annotations
 
 import datetime
-import json
 import logging
 import re
-from pathlib import Path
 from typing import Any
 
 import requests
 
 from .errors import DataFetchError, ValidationError
 from .jsonstore import read_json, write_json
-from .paths import DATA_DIR, SCREENER_CACHE_FILE, SCREENER_DIR
+from .paths import SCREENER_CACHE_FILE, SCREENER_DIR
+from .db.repositories import screener as _screener_repo
 
 logger = logging.getLogger(__name__)
 
@@ -26,8 +30,11 @@ DEFAULT_USER_AGENT = (
 REQUEST_TIMEOUT_SECONDS = 90
 
 
-def get_screener_file_for_date(date_str: str) -> Path:
-    """Return the Path to the local JSON file for a given trading date."""
+def get_screener_file_for_date(date_str: str):
+    """Return the Path to the local JSON file for a given trading date.
+
+    Kept for backward compatibility with multi_day_analyzer during transition.
+    """
     safe_date = re.sub(r"[^0-9\-]", "_", date_str.strip())
     return SCREENER_DIR / f"screener_{safe_date}.json"
 
@@ -50,7 +57,10 @@ def auto_detect_nonce() -> str | None:
 
 
 def get_or_refresh_nonce(forced: bool = False, manual_nonce: str = "") -> str:
-    """Retrieve the active nonce for today, or auto-detect a fresh one and cache it."""
+    """Retrieve the active nonce for today, or auto-detect a fresh one and cache it.
+
+    Nonce caching remains in screener_cache.json — it's tiny, transient data.
+    """
     today_str = datetime.date.today().isoformat()
     now_iso = datetime.datetime.now().astimezone().isoformat()
     index_meta = read_json(SCREENER_CACHE_FILE, default={})
@@ -97,67 +107,29 @@ def get_or_refresh_nonce(forced: bool = False, manual_nonce: str = "") -> str:
     )
 
 
-
 def list_saved_screener_dates() -> list[dict[str, Any]]:
-    """List all locally saved screener dates and their metadata."""
-    SCREENER_DIR.mkdir(parents=True, exist_ok=True)
-    index_meta = read_json(SCREENER_CACHE_FILE, default={"history": {}})
-    history = index_meta.get("history", {})
+    """List all locally saved screener dates and their metadata.
 
-    saved = []
-    for f in SCREENER_DIR.glob("screener_*.json"):
-        date_key = f.stem.replace("screener_", "")
-        meta = history.get(date_key, {})
-        try:
-            stat = f.stat()
-            file_mtime = datetime.datetime.fromtimestamp(stat.st_mtime).isoformat()
-            size = stat.st_size
-        except OSError:
-            file_mtime = None
-            size = 0
-
-        saved.append({
-            "date": date_key,
-            "filename": f.name,
-            "total": meta.get("total", 0),
-            "fetched_at": meta.get("fetched_at", file_mtime),
-            "file_size": size,
-        })
-
-    saved.sort(key=lambda x: x["date"], reverse=True)
-    return saved
+    Now reads from the screener_cache.db instead of scanning JSON files.
+    """
+    return _screener_repo.list_saved_dates()
 
 
 def load_cached_screener(date_str: str = "") -> dict[str, Any] | None:
-    """Load screener data from disk for a given date, or the latest available."""
-    SCREENER_DIR.mkdir(parents=True, exist_ok=True)
-    index_meta = read_json(SCREENER_CACHE_FILE, default={})
-
-    target_date = date_str.strip() if date_str else index_meta.get("latest_date")
+    """Load screener data from the DB for a given date, or the latest available."""
+    target_date = date_str.strip() if date_str else None
     if not target_date:
-        saved_dates = list_saved_screener_dates()
-        if saved_dates:
-            target_date = saved_dates[0]["date"]
+        target_date = _screener_repo.get_latest_date()
 
     if not target_date:
         return None
 
-    date_file = get_screener_file_for_date(target_date)
-    if not date_file.exists():
-        return None
-
-    try:
-        data = read_json(date_file)
-        if data:
-            data["last_fetched_at"] = index_meta.get("history", {}).get(target_date, {}).get(
-                "fetched_at", index_meta.get("last_fetched_at")
-            )
-            data["saved_dates"] = list_saved_screener_dates()
-            data["nonce_info"] = index_meta.get("nonce_info", {})
-        return data
-    except Exception as exc:
-        logger.warning("Failed reading screener file %s: %s", date_file, exc)
-        return None
+    data = _screener_repo.load_screener_for_date(target_date)
+    if data:
+        index_meta = read_json(SCREENER_CACHE_FILE, default={})
+        data["saved_dates"] = list_saved_screener_dates()
+        data["nonce_info"] = index_meta.get("nonce_info", {})
+    return data
 
 
 def fetch_screener_data(
@@ -166,7 +138,7 @@ def fetch_screener_data(
     search: str = "",
     per_page: int = 5000,
 ) -> dict[str, Any]:
-    """Execute manual POST fetch to bigbreakingwire screener and persist locally."""
+    """Execute manual POST fetch to bigbreakingwire screener and persist to DB."""
     active_nonce = nonce.strip() or get_or_refresh_nonce()
     cleaned_date = (date or "").strip()
 
@@ -269,24 +241,14 @@ def fetch_screener_data(
     items = data.get("items", [])
     total_count = data.get("total", len(items))
 
-    # Persist the date-specific dataset locally
-    SCREENER_DIR.mkdir(parents=True, exist_ok=True)
-    date_file = get_screener_file_for_date(effective_date)
-    write_json(date_file, data)
+    # Persist to SQLite database instead of JSON files
+    _screener_repo.save_screener_day(effective_date, data, items)
 
-    # Update index metadata
-    index_meta = read_json(SCREENER_CACHE_FILE, default={"history": {}})
-    history = index_meta.get("history", {})
-    history[effective_date] = {
-        "total": total_count,
-        "fetched_at": now_iso,
-        "file": date_file.name,
-    }
-
+    # Update nonce/metadata index (still JSON — tiny, transient)
+    index_meta = read_json(SCREENER_CACHE_FILE, default={})
     index_meta["last_fetched_at"] = now_iso
     index_meta["latest_date"] = effective_date
     index_meta["available_dates"] = data.get("dates", [])
-    index_meta["history"] = history
     write_json(SCREENER_CACHE_FILE, index_meta)
 
     logger.info(

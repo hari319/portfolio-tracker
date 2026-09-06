@@ -59,10 +59,10 @@ Each EMA column renders a stacked cell:
 3. Enter the ticker symbol:
    * Bare symbol defaults to NSE (e.g., `TCS` → `TCS.NS`).
    * Explicit suffix supported: `500325.BO` or `INFY.NS`.
-4. Click **Add ticker**. The system immediately validates the symbol via Yahoo Finance, computes its full EMA set, persists it to `config/portfolios.json`, logs the addition with a timestamp to `data/add_log.json`, and updates the UI in real time via Server-Sent Events (SSE).
+4. Click **Add ticker**. The system immediately validates the symbol via Yahoo Finance, computes its full EMA set, persists it to `stockmon.db` (in the `portfolio_ticker` table with immediate transactional safety), logs the addition with a timestamp to the pending queue, and updates the UI in real time via Server-Sent Events (SSE).
 
 ### Removing a Ticker
-* Click the **✕** button on any row in the portfolio table. The symbol is removed from `config/portfolios.json` and the UI updates instantly.
+* Click the **✕** button on any row in the portfolio table. The symbol is removed from `stockmon.db` and the UI updates instantly.
 
 ---
 

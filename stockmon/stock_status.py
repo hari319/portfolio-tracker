@@ -1,7 +1,10 @@
 """Stock Status data storage and management.
 
 Persists analysis records (Ticker, Date of Analysis, Price, Base/Bull/Bear targets, Remarks)
-into data/stock_status.json.
+into the ``stock_status`` table in ``stockmon.db``.
+
+Migrated from flat JSON (data/stock_status.json) to per-row CRUD operations
+via ``stockmon.db.repositories.stock_status``.
 """
 
 from __future__ import annotations
@@ -12,8 +15,7 @@ from datetime import datetime
 from typing import Any
 
 from .errors import ValidationError
-from .jsonstore import read_json, write_json
-from .paths import STOCK_STATUS_FILE
+from .db.repositories import stock_status as _repo
 from .portfolio import normalize_symbol
 
 logger = logging.getLogger(__name__)
@@ -21,15 +23,27 @@ logger = logging.getLogger(__name__)
 
 def load_stock_statuses() -> list[dict[str, Any]]:
     """Return the list of saved stock status entries."""
-    data = read_json(STOCK_STATUS_FILE, default=[])
-    if isinstance(data, list):
-        return data
-    return []
+    return _repo.load_all()
 
 
 def save_stock_statuses(items: list[dict[str, Any]]) -> None:
-    """Save the list of stock status entries atomically."""
-    write_json(STOCK_STATUS_FILE, items)
+    """Save the list of stock status entries.
+
+    Note: This legacy function is kept for API compatibility but now
+    delegates to per-row operations. For normal use, prefer add/update/delete.
+    """
+    # Bulk replace: delete all and re-insert
+    from .db import get_connection
+    conn = get_connection()
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        conn.execute("DELETE FROM stock_status")
+        for item in items:
+            _repo.add(item)
+        conn.execute("COMMIT")
+    except Exception:
+        conn.execute("ROLLBACK")
+        raise
 
 
 def add_stock_status(payload: dict[str, Any]) -> dict[str, Any]:
@@ -92,71 +106,65 @@ def add_stock_status(payload: dict[str, Any]) -> dict[str, Any]:
         "created_at": datetime.now().isoformat(),
     }
 
-    items = load_stock_statuses()
-    items.insert(0, entry)  # Prepend new entries to the top
-    save_stock_statuses(items)
+    _repo.add(entry)
     logger.info("Added stock status entry for %s (id=%s)", symbol, entry["id"])
     return entry
 
 
 def delete_stock_status(item_id: str) -> list[dict[str, Any]]:
     """Delete a stock status entry by id."""
-    items = load_stock_statuses()
-    new_items = [item for item in items if item.get("id") != item_id]
-    save_stock_statuses(new_items)
+    _repo.delete(item_id)
     logger.info("Deleted stock status entry with id=%s", item_id)
-    return new_items
+    return _repo.load_all()
 
 
 def update_stock_status(item_id: str, payload: dict[str, Any]) -> dict[str, Any]:
     """Update an existing stock status entry by id."""
-    items = load_stock_statuses()
-    target_item = None
-    for item in items:
-        if item.get("id") == item_id:
-            target_item = item
-            break
-
-    if target_item is None:
+    existing = _repo.get_by_id(item_id)
+    if existing is None:
         raise ValidationError(f"Stock status entry with id '{item_id}' not found.")
 
+    # Build changes dict for the repository
+    changes: dict[str, Any] = {}
+
     if "name" in payload and payload["name"]:
-        target_item["name"] = str(payload["name"]).strip()
+        changes["name"] = str(payload["name"]).strip()
 
     if "price_of_analysis" in payload and payload["price_of_analysis"] is not None and payload["price_of_analysis"] != "":
         try:
-            target_item["price_of_analysis"] = float(payload["price_of_analysis"])
+            changes["price_of_analysis"] = float(payload["price_of_analysis"])
         except (ValueError, TypeError):
             pass
 
     if "best_entry" in payload:
         best_val = payload["best_entry"]
         try:
-            target_item["best_entry"] = float(best_val) if best_val is not None and best_val != "" else None
+            changes["best_entry"] = float(best_val) if best_val is not None and best_val != "" else None
         except (ValueError, TypeError):
-            target_item["best_entry"] = None
+            changes["best_entry"] = None
 
     if "status" in payload:
-        target_item["status"] = str(payload.get("status", "")).strip()
+        changes["status"] = str(payload.get("status", "")).strip()
 
     if "date_of_analysis" in payload and payload["date_of_analysis"]:
-        target_item["date_of_analysis"] = str(payload["date_of_analysis"]).strip()
+        changes["date_of_analysis"] = str(payload["date_of_analysis"]).strip()
 
     for key in ("base", "bull", "bear"):
         if key in payload:
             val = payload[key]
             if not isinstance(val, list):
                 val = [str(val), ""]
-            target_item[key] = [
+            changes[key] = [
                 str(val[0]) if len(val) > 0 else "",
                 str(val[1]) if len(val) > 1 else "",
             ]
 
     if "remarks" in payload:
-        target_item["remarks"] = str(payload.get("remarks", "")).strip()
+        changes["remarks"] = str(payload.get("remarks", "")).strip()
 
-    target_item["updated_at"] = datetime.now().isoformat()
-    save_stock_statuses(items)
-    logger.info("Updated stock status entry for %s (id=%s)", target_item.get("symbol"), item_id)
-    return target_item
+    _repo.update(item_id, changes)
+    logger.info("Updated stock status entry for %s (id=%s)", existing.get("symbol"), item_id)
 
+    # Return the updated entry
+    updated = _repo.get_by_id(item_id)
+    return updated if updated else existing

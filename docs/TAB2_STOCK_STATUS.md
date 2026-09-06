@@ -30,7 +30,7 @@ Investors frequently analyze a stock at a specific price point, project targets,
    * **Bull Scenario**: Favorable tailwinds, accelerated earnings
    * **Bear Scenario**: Margin compression, valuation de-rating
 6. Enter optional **Remarks** (key catalysts, thesis summary, stoploss level).
-7. Click **Submit** to save the entry to `data/stock_status.json`.
+7. Click **Submit** to save the entry to `data/stockmon.db` (in the `stock_status` table with per-row CRUD transactions).
 
 ---
 
@@ -38,7 +38,7 @@ Investors frequently analyze a stock at a specific price point, project targets,
 
 * **Live Current Price**: Displays the latest live market price alongside a color-coded percentage badge (`+X.X%` / `-X.X%`) comparing the current live price against the baseline analysis price.
 * **Best Entry Comparison**: The Best Entry column shows your target purchase price alongside a color-coded distance badge (`+X.X%` / `-X.X%` from Current Price).
-* **Quote Caching & Fallback**: Quotes are cached locally in `data/quotes_cache.json`. If a live network lookup times out, the last known cached price and timestamp render seamlessly.
+* **Quote Caching & Fallback**: Quotes are cached locally in `data/stockmon.db` (in the `quote_cache` table). If a live network lookup times out, the last known cached price and timestamp render seamlessly.
 * **Refresh Prices Button**: Dedicated button in the Status tab to update live market quotes and timestamps for all analyzed stocks without recomputing portfolio EMAs.
 
 ---

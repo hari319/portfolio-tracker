@@ -6,29 +6,26 @@ to detect predictive footprints:
 2. Fresh Signal Flips (Supertrend or 20 SMA flipped within last 24-48 hours)
 3. Multi-Day VCP Coiling & Breakouts
 4. Consecutive Higher Lows (Institutional staircase)
+
+Now reads from ``screener_cache.db`` via indexed queries instead of parsing
+~154 MB of JSON files.  The file-based cache (multi_day_analysis_cache.json)
+is replaced by an in-memory cache keyed on dates.
 """
 
 from __future__ import annotations
 
-import datetime
-import json
 import logging
 import time
-from pathlib import Path
 from typing import Any, Callable
 
-from .jsonstore import read_json, write_json
-from .paths import SCREENER_CACHE_FILE, SCREENER_DIR
+from .db.repositories import screener as _screener_repo
 from .screener import (
     fetch_screener_data,
-    get_screener_file_for_date,
     list_saved_screener_dates,
     load_cached_screener,
 )
 
 logger = logging.getLogger(__name__)
-
-MULTI_DAY_CACHE_FILE = SCREENER_DIR / "multi_day_analysis_cache.json"
 
 # In-memory cache to answer repeat requests in <1ms
 _MEMORY_CACHE: dict[str, Any] | None = None
@@ -36,32 +33,15 @@ _MEMORY_CACHE_KEY: str | None = None
 
 
 def clear_multi_day_cache() -> None:
-    """Invalidate in-memory and on-disk multi-day trajectory cache."""
+    """Invalidate in-memory multi-day trajectory cache."""
     global _MEMORY_CACHE, _MEMORY_CACHE_KEY
     _MEMORY_CACHE = None
     _MEMORY_CACHE_KEY = None
-    if MULTI_DAY_CACHE_FILE.exists():
-        try:
-            MULTI_DAY_CACHE_FILE.unlink()
-        except OSError:
-            pass
 
 
 def _compute_cache_key(dates: list[str]) -> str:
-    """Create a cache fingerprint based on dates and file modification times."""
-    parts = []
-    for d in dates:
-        f = get_screener_file_for_date(d)
-        if f.exists():
-            try:
-                mtime = f.stat().st_mtime
-                size = f.stat().st_size
-                parts.append(f"{d}:{int(mtime)}:{size}")
-            except OSError:
-                parts.append(d)
-        else:
-            parts.append(f"{d}:missing")
-    return "|".join(parts)
+    """Create a cache fingerprint based on dates available in the DB."""
+    return "|".join(dates)
 
 
 def sync_historical_dates(
@@ -70,7 +50,7 @@ def sync_historical_dates(
     delay_seconds: float = 1.0,
     progress_callback: Callable[[str, int, int], None] | None = None,
 ) -> dict[str, Any]:
-    """Sync missing historical dates from the screener API into local cache."""
+    """Sync missing historical dates from the screener API into the DB."""
     # Discover available dates from latest cached screener or fetch latest
     if not target_dates:
         latest = load_cached_screener()
@@ -80,6 +60,7 @@ def sync_historical_dates(
         target_dates = available[:max_days]
 
     if not target_dates:
+        import datetime
         target_dates = [datetime.date.today().isoformat()]
 
     synced_dates: list[str] = []
@@ -90,9 +71,9 @@ def sync_historical_dates(
 
     for idx, date_str in enumerate(target_dates, start=1):
         clean_date = date_str.strip()
-        date_file = get_screener_file_for_date(clean_date)
 
-        if date_file.exists():
+        # Check the DB instead of the filesystem
+        if _screener_repo.date_exists(clean_date):
             already_cached.append(clean_date)
             if progress_callback:
                 progress_callback(clean_date, idx, total_targets)
@@ -132,20 +113,13 @@ def analyze_multi_day_sequences(
 ) -> dict[str, Any]:
     """Analyze multi-day sequence trajectories across saved historical dates.
 
-    Produces predictive metrics:
-    - accumulation_score (0-100)
-    - supertrend_flip_days (0 = today, 1 = yesterday, etc.)
-    - ma20_cross_days (0 = today, 1 = yesterday, etc.)
-    - consecutive_higher_lows
-    - vcp_compression_ratio
-    - delivery_growth_3d_pct
-    - predictive_setups: list of setup tags ('silent_accumulation', 'fresh_signal_flip', 'vcp_breakout', 'momentum_staircase')
+    Now uses indexed DB queries instead of parsing full JSON files.
     """
     global _MEMORY_CACHE, _MEMORY_CACHE_KEY
 
     saved = list_saved_screener_dates()
     if not saved:
-        return {"ok": False, "error": "No saved screener data available on disk to analyze."}
+        return {"ok": False, "error": "No saved screener data available to analyze."}
 
     # Available dates sorted chronologically (oldest -> newest)
     all_saved_dates = sorted([x["date"] for x in saved])
@@ -164,66 +138,29 @@ def analyze_multi_day_sequences(
     if not force_recompute and _MEMORY_CACHE is not None and _MEMORY_CACHE_KEY == cache_key:
         return _MEMORY_CACHE
 
-    # 2. Check on-disk cache
-    if not force_recompute and MULTI_DAY_CACHE_FILE.exists():
-        try:
-            cached = read_json(MULTI_DAY_CACHE_FILE)
-            if cached and cached.get("cache_key") == cache_key:
-                _MEMORY_CACHE = cached
-                _MEMORY_CACHE_KEY = cache_key
-                return cached
-        except Exception as exc:
-            logger.debug("Multi-day cache read error: %s", exc)
-
-    # 3. Compute trajectory analysis with lightweight projection for speed
+    # 2. Compute trajectory analysis using indexed DB queries
     t0 = time.time()
-    snapshots: list[tuple[str, dict[str, Any]]] = []
-    needed_history_keys = {
-        "close",
-        "open",
-        "high",
-        "low",
-        "volume",
-        "delivery_qty",
-        "delivery_percent",
-        "supertrend_dir",
-        "sma_20",
-        "close_near_high_pct",
-        "volume_ratio_20",
-        "range_pct_5",
-        "pct_change",
-    }
 
-    for idx, d in enumerate(selected_dates):
-        f = get_screener_file_for_date(d)
-        if not f.exists():
+    # Load hot columns from DB — this replaces the 154 MB file-parsing path
+    hot_rows = _screener_repo.load_hot_columns_for_dates(selected_dates)
+
+    # Also load full data for the latest date (needed for UI rendering)
+    latest_date = selected_dates[-1]
+    latest_data = _screener_repo.load_screener_for_date(latest_date)
+    latest_items = {item.get("symbol"): item for item in (latest_data.get("items", []) if latest_data else [])}
+
+    # Build per-symbol time series from DB results
+    # Group hot rows by symbol
+    symbol_history: dict[str, list[tuple[str, dict[str, Any]]]] = {}
+    for row in hot_rows:
+        symbol = row.get("symbol")
+        if not symbol:
             continue
-        try:
-            with open(f, "r", encoding="utf-8") as fp:
-                content = json.load(fp)
-            items = content.get("items", [])
-            is_latest = (idx == len(selected_dates) - 1)
+        if symbol not in symbol_history:
+            symbol_history[symbol] = []
+        symbol_history[symbol].append((row["trade_date"], row))
 
-            if is_latest:
-                # Latest date keeps full dictionaries
-                item_map = {item.get("symbol"): item for item in items if item.get("symbol")}
-            else:
-                # Older dates keep only lightweight needed fields (14x faster loading & 90% less RAM)
-                item_map = {
-                    item.get("symbol"): {k: item.get(k) for k in needed_history_keys if k in item}
-                    for item in items
-                    if item.get("symbol")
-                }
-            snapshots.append((d, item_map))
-        except Exception as exc:
-            logger.warning("Error reading %s for sequence analysis: %s", f, exc)
-
-    if not snapshots:
-        return {"ok": False, "error": "Could not read any date snapshots from disk."}
-
-    latest_date, latest_item_map = snapshots[-1]
-    num_days = len(snapshots)
-
+    num_days = len(selected_dates)
     analyzed_items: list[dict[str, Any]] = []
     items_by_symbol: dict[str, dict[str, Any]] = {}
 
@@ -234,15 +171,16 @@ def analyze_multi_day_sequences(
         "momentum_staircase": 0,
     }
 
-    for symbol, current_item in latest_item_map.items():
-        hist = []
-        for d, date_map in snapshots:
-            snap_item = date_map.get(symbol)
-            if snap_item:
-                hist.append((d, snap_item))
-
-        if not hist:
-            continue
+    for symbol, hist in symbol_history.items():
+        # Get the full current item from the latest date
+        current_item = latest_items.get(symbol)
+        if not current_item:
+            # Build a minimal item from the last hot row
+            if hist:
+                last_row = hist[-1][1]
+                current_item = dict(last_row)
+            else:
+                continue
 
         item_enriched = dict(current_item)
         k = len(hist)
@@ -277,13 +215,13 @@ def analyze_multi_day_sequences(
                 else:
                     break
 
-        # 3. Fresh Supertrend Flip Days (0 = today, 1 = yesterday, etc.)
+        # 3. Fresh Supertrend Flip Days
         supertrend_flip_days: int | None = None
         current_st = current_item.get("supertrend_dir")
-        if current_st == 1:
+        if current_st == 1 or str(current_st) == "1":
             for i in range(k - 1, -1, -1):
                 st_val = hist[i][1].get("supertrend_dir")
-                if st_val != 1:
+                if st_val != 1 and str(st_val) != "1":
                     supertrend_flip_days = (k - 1) - i - 1
                     break
             if supertrend_flip_days is None:
@@ -368,12 +306,10 @@ def analyze_multi_day_sequences(
         # 8. Setup Categorization
         predictive_setups = []
 
-        # Setup 1: Silent Accumulation
         if accumulation_score >= 65 and abs(window_price_change_pct) <= 5.0 and deliv_pct >= 35:
             predictive_setups.append("silent_accumulation")
             setups_summary["silent_accumulation"] += 1
 
-        # Setup 2: Fresh Signal Flip
         if (
             (supertrend_flip_days in (0, 1) or ma20_cross_days in (0, 1))
             and rvol >= 1.2
@@ -382,7 +318,6 @@ def analyze_multi_day_sequences(
             predictive_setups.append("fresh_signal_flip")
             setups_summary["fresh_signal_flip"] += 1
 
-        # Setup 3: VCP Breakout
         if (
             ((vcp_compression_ratio is not None and vcp_compression_ratio <= 0.65) or (current_item.get("range_pct_5") or 100) <= 6.0)
             and rvol >= 1.4
@@ -392,12 +327,10 @@ def analyze_multi_day_sequences(
             predictive_setups.append("vcp_breakout")
             setups_summary["vcp_breakout"] += 1
 
-        # Setup 4: Momentum Staircase
         if consecutive_higher_lows >= 3 and (current_item.get("pct_change") or 0) >= 0.5:
             predictive_setups.append("momentum_staircase")
             setups_summary["momentum_staircase"] += 1
 
-        # Metrics dictionary
         metrics = {
             "accumulation_score": accumulation_score,
             "consecutive_rising_delivery": consecutive_rising_delivery,
@@ -434,12 +367,6 @@ def analyze_multi_day_sequences(
         "items": analyzed_items,
         "items_by_symbol": items_by_symbol,
     }
-
-    # Save to disk cache and update memory cache
-    try:
-        write_json(MULTI_DAY_CACHE_FILE, result)
-    except Exception as exc:
-        logger.warning("Could not write multi-day cache to disk: %s", exc)
 
     _MEMORY_CACHE = result
     _MEMORY_CACHE_KEY = cache_key

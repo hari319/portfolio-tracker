@@ -41,25 +41,26 @@ Detailed feature guides, formulas, screening criteria, and workflows have been m
 ## How It Works
 
 ```
-config/portfolios.json ──┐
-config/settings.json  ───┤
-                         ▼
-   scheduled_run.py / "Refresh now"  ──►  yfinance  ──►  EMA engine
+config/settings.json ────────────────┐
+data/stockmon.db (portfolios, etc.) ─┤
+                                     ▼
+   scheduled_run.py / "Refresh now" ──► yfinance ──► EMA engine
                          │
-                         ├──►  data/snapshot.json   (what the UI renders from)
-                         └──►  data/status.json     ("new data available", version counter)
+                         ├──► data/stockmon.db       (stores snapshot, quote cache, bumps sync_state)
+                         ├──► backups/stockmon-*.gz  (automatic online gzip backup)
+                         └──► data/screener_cache.db (prunes old dates > 60 trading days)
                                        │
                                        ▼
-                  Flask (daemon thread)  ──SSE──►  React Frontend (pywebview / Browser)
-                                                   (auto-refreshes on new data)
-                  scheduled_run.py  ──►  show_window.py  ──►  pops up reminder window
+                  Flask (daemon thread) ──SSE──► React Frontend (pywebview / Browser)
+                                                   (auto-refreshes on version update)
+                  scheduled_run.py ──► show_window.py ──► pops up reminder window
                                          (only if no window is already open)
 ```
 
 * **Prices & Historical Bars**: Fetched via `yfinance`. NSE symbols use `.NS`, BSE symbols use `.BO`.
 * **Weekly Candles**: Resampled from daily history (Friday-anchored) for speed and live price consistency.
-* **Shared File State**: Flask and scheduled tasks communicate via atomic JSON files (`data/snapshot.json` and `data/status.json`).
-* **Real-Time UI Updates**: Open desktop windows receive Server-Sent Events (SSE) from Flask whenever data updates.
+* **Shared Database State**: Flask and scheduled tasks communicate through SQLite in Write-Ahead Logging (`WAL`) mode, preventing cross-process read/write lock contention.
+* **Real-Time UI Updates**: Open desktop windows receive Server-Sent Events (SSE) from Flask whenever the `sync_state` version updates.
 
 ---
 
@@ -77,6 +78,7 @@ Daily Updater/
 │   ├── TAB1_PORTFOLIO_MONITOR.md
 │   ├── TAB2_STOCK_STATUS.md
 │   ├── TAB3_MARKET_SCREENER.md
+│   ├── DATA_STORAGE_MIGRATION.md # Completed SQLite migration design & verification
 │   └── KNOWLEDGE_GRAPH.md
 ├── frontend/                  # React + Bootstrap 5 frontend (Vite)
 │   ├── package.json
@@ -84,8 +86,7 @@ Daily Updater/
 │   ├── dist/                  # Production build served by Flask
 │   └── src/                   # React components, styles, and API client
 ├── stockmon/                  # Python backend package
-│   ├── paths.py               # Config/data/log path resolution
-│   ├── jsonstore.py           # Thread-safe atomic JSON store
+│   ├── paths.py               # Config/data/log/backup path resolution
 │   ├── logging_config.py      # Rotating file + console logging
 │   ├── config_manager.py      # settings.json manager
 │   ├── portfolio.py           # Portfolios, ticker validation, TradingView links
@@ -95,13 +96,23 @@ Daily Updater/
 │   ├── multi_day_analyzer.py  # Multi-day chronological sequence engine
 │   ├── service.py             # Orchestration service
 │   ├── status.py              # Version counter and update signaling
-│   └── web/                   # Flask server, routes, and SSE streaming
-├── scripts/                   # Windows Task Scheduler automation scripts
+│   ├── stock_status.py        # Stock status management
+│   ├── db/                    # SQLite database foundation, migrations, and repositories
+│   │   ├── migrations.py      # PRAGMA user_version schema runner
+│   │   ├── schema_v1.sql      # Durable schema (portfolios, quotes, status)
+│   │   ├── schema_screener.sql# Disposable screener cache schema
+│   │   ├── backup.py          # Online backup API, gzip snapshots & restore
+│   │   └── repositories/      # Repository SQL access layer
+│   └── web/                   # Flask server, routes, SSE streaming, backup endpoints
+├── scripts/                   # Windows Task Scheduler & migration automation
+│   ├── migrate_to_sqlite.py   # Re-runnable JSON to SQLite database importer
+│   ├── export_to_json.py      # Escape hatch export from SQLite back to JSON
 │   ├── register_task.ps1      # Registers/updates task from settings.json
 │   ├── run_scheduled.ps1      # PowerShell execution wrapper
 │   └── run_scheduled.bat      # Batch file execution wrapper
 ├── config/                    # Local configuration (settings.json, portfolios.json)
-├── data/                      # Local data stores, screener cache, and quotes cache
+├── data/                      # SQLite databases (stockmon.db, screener_cache.db)
+├── backups/                   # Online consistent compressed backups & manifests
 └── logs/                      # Application, scheduler, and ticker audit logs
 ```
 
@@ -234,10 +245,12 @@ Enable-ScheduledTask -TaskName "StockMonitor-DailyUpdate"
 ### Scheduled Execution Workflow
 1. Runs `scheduled_run.py` at the scheduled times.
 2. Checks the weekday guard (Mon–Fri only).
-3. Consumes any newly added tickers from `data/pending_additions.json`.
-4. Fetches market prices, recomputes EMAs, and updates `data/snapshot.json`.
-5. Increments `data/status.json`, triggering an instant SSE refresh on any open desktop window.
-6. Launches `show_window.py` to pop the window to the foreground as a visual alert.
+3. Atomically drains and consumes newly added tickers from `stockmon.db` (preventing lost updates).
+4. Fetches market prices, recomputes EMAs, and updates the `tracker_snapshot` table in `stockmon.db`.
+5. Increments `sync_state.version` in `stockmon.db`, triggering an instant SSE refresh on any open desktop window.
+6. Prunes screener records older than `screener_retention_days` (default: 60 trading days) from `screener_cache.db`.
+7. Takes an automatic online consistent compressed backup of `stockmon.db` into `backups/` and rotates old files.
+8. Launches `show_window.py` to pop the window to the foreground as a visual alert.
 
 ---
 
@@ -255,6 +268,7 @@ Settings are stored in `config/settings.json` (see `config.template.json`):
 | `data.ema_periods` | `[9, 21, 50, 100, 200]` | Tracked EMA periods |
 | `data.max_workers` | `4` | Concurrency for background downloads |
 | `data.retries` / `data.retry_backoff_seconds` | `2` / `1.5` | Retry attempts and backoff duration |
+| `data.screener_retention_days` | `60` | Number of recent trading days of screener history to keep |
 | `ui.status_poll_seconds` | `5` | Fallback polling interval if SSE disconnects |
 | `ui.price_decimals` | `2` | Number of decimal places rendered in tables |
 
@@ -299,6 +313,56 @@ The Flask backend provides clean REST endpoints and real-time SSE streaming:
 | `GET /api/screener/detect-nonce` | Auto-detects and returns active `X-WP-Nonce` from the screener site. |
 | `POST /api/screener/sync-history` | Synchronizes available past trading dates into local disk cache. |
 | `GET /api/screener/multi-day-analysis` | Computes multi-day sequence metrics and returns ranked predictive setups. |
+| `POST /api/backup/create` | Triggers immediate online consistent backup of `stockmon.db` into `backups/`. |
+| `GET /api/backup/list` | Returns manifest of backups, sizes, SHA-256 checksums, and 7-day staleness warning. |
+| `POST /api/backup/restore` | Safely restores durable database from a chosen backup file `{filename}`. |
+| `POST /api/screener/rebuild` | Triggers background historical screener re-fetch from the upstream API. |
+
+---
+
+## Backup, Restore & Disaster Recovery
+
+### Safe Online Backups
+* Backups run **automatically** at the end of every scheduled market run, and can also be triggered on demand via `POST /api/backup/create`.
+* **7-Day Retention**: The system automatically retains **1 week (7 backups)** of daily snapshots; older backups are automatically pruned to prevent clutter.
+* Backups only snapshot irreplaceable user data from `data/stockmon.db` (compressed to ~10–15 KB). Market screener data in `data/screener_cache.db` is disposable and rebuilt on demand from the upstream API.
+
+### What is Inside `backups/` and What Each File Does
+When copying to Google Drive or an external disk, copy the `backups/` directory:
+
+| File Pattern | Description & Purpose |
+| :--- | :--- |
+| `stockmon-YYYY-MM-DD_HHMMSS.db.gz` | **Main Database Snapshot**: Contains your portfolios, stock status valuation records, and tracker snapshots. This is the primary file needed to restore your state. |
+| `settings-YYYY-MM-DD_HHMMSS.json` | **Configuration Snapshot**: Backup of your `config/settings.json` (EMA periods, schedule times, retry options). |
+| `manifest.json` | **Audit Ledger**: Contains SHA-256 integrity checksums, timestamps, row counts, and schema versions for every generated backup. |
+
+### How to Copy to Google Drive Manually
+1. Open your project root folder and locate the `backups/` directory.
+2. Drag and drop the `backups/` folder (or just the latest `stockmon-*.db.gz` and `settings-*.json`) directly into your Google Drive or external storage.
+3. *Note*: Never put the live `data/` folder itself inside a cloud-synced folder (sync conflicts can corrupt live SQLite databases in WAL mode). Always sync the static files in `backups/` instead.
+
+### Manual CLI Disaster Recovery (Without Starting the App)
+If the application is stopped or you are moving to a new PC and need to restore:
+```powershell
+# 1. Decompress your chosen backup file directly to data/stockmon.db
+python -c "import gzip, shutil; shutil.copyfileobj(gzip.open('backups/stockmon-2026-09-06_192451.db.gz', 'rb'), open('data/stockmon.db', 'wb'))"
+
+# 2. Copy the paired settings file into config/settings.json (optional)
+Copy-Item "backups/settings-2026-09-06_192451.json" "config/settings.json"
+
+# 3. Start the application (screener cache will re-sync from API if needed)
+python app.py
+```
+
+### Automatic 1-Day Log Cleanup
+All application and scheduler logs in `logs/` are automatically rotated and pruned:
+* Log files or rolled-over logs older than **1 day** are automatically purged on startup and after every scheduled market run.
+
+### Emergency JSON Export (Escape Hatch)
+To dump the entire SQLite database back into raw, human-readable JSON files:
+```powershell
+python scripts/export_to_json.py --output-dir exported_json/
+```
 
 ---
 

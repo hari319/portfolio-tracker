@@ -12,7 +12,8 @@ The application is a local desktop financial dashboard that monitors Indian equi
 - **Frontend**: React 18, Vite 6, Bootstrap 5.3, Lucide React (icons), vanilla CSS (`custom.css`).
 - **Backend**: Python 3.10+, Flask (routes & SSE server), pywebview (desktop shell), yfinance (market data).
 - **Automation / Scheduling**: Windows Task Scheduler invoking PowerShell background runner scripts.
-- **Inter-Process Coordination**: Shared atomic JSON files with Server-Sent Events (SSE) push notifications.
+- **Inter-Process Coordination**: Shared SQLite databases in WAL mode with Server-Sent Events (SSE) push notifications.
+- **Data Persistence**: Two SQLite databases (`stockmon.db` for durable user data + `screener_cache.db` for disposable market cache) with automated online gzip backups.
 
 ---
 
@@ -26,8 +27,9 @@ flowchart TB
         WTS[Windows Task Scheduler] -->|weekdays 09:30, 11:30| PS[scripts/run_scheduled.ps1]
         PS --> SR[scheduled_run.py]
         SR -->|Fetch data & compute EMAs| YF1[yfinance / EMA Engine]
-        SR -->|Atomic Write| SNAP[data/snapshot.json]
-        SR -->|Version Bump| STAT[data/status.json]
+        SR -->|Transactional Write| DB[(data/stockmon.db - WAL)]
+        SR -->|Online Gzip Backup| BK[backups/stockmon-*.db.gz]
+        SR -->|Prune >60 days| SDB[(data/screener_cache.db - WAL)]
         SR -->|Popup on top| SW[show_window.py]
     end
 
@@ -35,17 +37,17 @@ flowchart TB
         APP[app.py / pywebview] --> FLASK[Flask Server (stockmon.web)]
         FLASK -->|SSE Stream /api/stream| SSE[SSE Watcher]
         FLASK -->|REST API| ROUTES[stockmon/web/routes.py]
-        ROUTES -->|Read/Write| SNAP
-        ROUTES -->|Read/Write| STAT
-        ROUTES -->|Read/Write| SSTATUS[data/stock_status.json]
-        ROUTES -->|Read/Write| QCACHE[data/quotes_cache.json]
-        ROUTES -->|Read/Write| CFG[config/settings.json & portfolios.json]
+        ROUTES -->|Repositories| REPOS[stockmon/db/repositories/*]
+        REPOS -->|Read/Write Durable| DB
+        REPOS -->|Read/Write Disposable| SDB
+        ROUTES -->|Read/Write Settings| CFG[config/settings.json]
     end
 
     subgraph Frontend [React SPA (frontend/dist)]
         UI[App.jsx]
         UI --> TAB1[Portfolio Tracker Tab]
         UI --> TAB2[Stock Status Tab]
+        UI --> TAB3[Screener Tab]
         TAB1 --> PTABLE[PortfolioTable.jsx]
         TAB2 --> STABLE[StatusTable.jsx]
         TAB2 --> SMODAL[AddStatusModal.jsx]
@@ -102,58 +104,58 @@ sequenceDiagram
 Daily Updater/
 ├── app.py                     # Primary desktop entry point (launches Flask in daemon thread + pywebview)
 ├── show_window.py             # Focuses or restores the application window after scheduled refresh
-├── scheduled_run.py           # CLI script triggered by Windows Task Scheduler
+├── scheduled_run.py           # CLI script triggered by Windows Task Scheduler (auto-prunes & backs up)
 ├── config/                    # Configuration storage
-│   ├── settings.json          # Schedule times, timezone, task name, EMA periods, retry limits
-│   └── portfolios.json        # Portfolio lists (e.g. "BAPA", "MADI" ticker arrays)
-├── data/                      # Atomic runtime stores
-│   ├── snapshot.json          # Rendered Tracker snapshot (prices, EMAs, signals, warnings)
-│   ├── status.json            # Status sync file (version integer incremented on updates)
-│   ├── stock_status.json      # Saved stock valuation records (targets, best entry, status, remarks)
-│   ├── quotes_cache.json      # Cached stock price quotes & timestamps (fallback cache)
-│   └── pending_additions.json # Queue of tickers added through UI to be processed in next run
+│   ├── settings.json          # Schedule times, timezone, task name, EMA periods, retention days
+│   └── portfolios.json        # Legacy JSON seed file (imported into SQLite)
+├── data/                      # SQLite runtime stores (WAL mode)
+│   ├── stockmon.db            # Durable DB: portfolios, pending additions, sync state, snapshots, status
+│   └── screener_cache.db      # Disposable DB: screener day metadata and indexed row data (promoted hot cols)
+├── backups/                   # Online consistent gzip database snapshots & manifests
+│   ├── manifest.json          # Checksums, timestamps, row counts, and schema versions
+│   └── stockmon-*.db.gz       # Compressed point-in-time snapshots of stockmon.db
 ├── docs/                      # Architectural and technical documentation
+│   ├── DATA_STORAGE_MIGRATION.md # Data storage architecture review, rationale, and completed migration plan
 │   └── KNOWLEDGE_GRAPH.md     # [This file] Fast architectural lookup and module map
 ├── frontend/                  # React Single-Page Application (Vite project)
 │   ├── package.json           # Dependencies (React 18, Bootstrap 5.3, Lucide React, Vite 6)
 │   ├── vite.config.js         # Dev proxy config (/api -> http://127.0.0.1:5000)
 │   ├── dist/                  # Production bundle (HTML, JS, CSS) served by Flask
 │   └── src/
-│       ├── main.jsx           # React root entry point
-│       ├── App.jsx            # Main app shell, tab switching, global polling / SSE setup
-│       ├── api.js             # Fetch client for all backend REST endpoints
-│       ├── components/
-│       │   ├── Header.jsx           # App bar with active tab switch, "Refresh now", last run time
-│       │   ├── PortfolioSection.jsx # Collapsible portfolio container (BAPA / MADI)
-│       │   ├── PortfolioTable.jsx   # Tracker table (EMA columns, Sell/Hold signals, notes)
-│       │   ├── EmaCell.jsx          # Stacked Daily (D:) / Weekly (W:) EMA value renderer
-│       │   ├── AddTickerPanel.jsx   # Ticker addition form with real-time duplicate check
-│       │   ├── SchedulePanel.jsx    # UI to edit Task Scheduler run times (HH:MM)
-│       │   ├── StatusTab.jsx        # Status tab container (search, filter, batch quotes, modal trigger)
-│       │   ├── StatusTable.jsx      # Valuation scenarios table (Best Entry, Status, Targets, Remarks)
-│       │   ├── AddStatusModal.jsx   # Add/Edit stock status modal (Live fetch, Best Entry, Status dropdown)
-│       │   ├── ErrorsPanel.jsx      # Panel displaying fetch issues or errors
-│       │   ├── Footer.jsx           # Footer showing connection status (live SSE vs. polling)
-│       │   └── Toast.jsx            # Notification toast popups
-│       └── styles/
-│           └── custom.css           # Global application styles, badges, table layouts, modals
 ├── stockmon/                  # Python backend application package
 │   ├── __init__.py
 │   ├── paths.py               # Centralized path resolver (configurable via env variables)
-│   ├── jsonstore.py           # Atomic JSON read/write using temporary file replace
+│   ├── jsonstore.py           # Legacy atomic JSON helper (used for settings.json & export)
 │   ├── logging_config.py      # Multi-handler rotating log setup (app.log, scheduler.log)
 │   ├── errors.py              # Custom exceptions (ValidationError, DataFetchError)
 │   ├── config_manager.py      # Loader and updater for settings.json
-│   ├── portfolio.py           # Symbol normalization, validation, and TradingView URL generation
-│   ├── data_fetcher.py        # yfinance market data downloader with retries and caching
+│   ├── portfolio.py           # Portfolios, ticker validation, TradingView links (delegates to DB repo)
+│   ├── data_fetcher.py        # yfinance market data downloader with quote cache in DB
 │   ├── ema.py                 # EMA calculation and Friday-anchored weekly candle resampling
+│   ├── screener.py            # Screener API client, daily nonce handling, and DB storage
+│   ├── multi_day_analyzer.py  # Multi-day sequence analyzer querying screener_cache.db hot columns
 │   ├── service.py             # Orchestration service: fetch -> EMA -> snapshot -> status version bump
-│   ├── status.py              # Status version store management (SSE triggers)
-│   ├── stock_status.py        # Storage and CRUD operations for stock_status.json
+│   ├── status.py              # Status version store management (delegates to DB repo)
+│   ├── stock_status.py        # Storage and CRUD operations for stock status (delegates to DB repo)
+│   ├── db/                    # SQLite database engine, lifecycle, migrations, and backups
+│   │   ├── __init__.py        # connect(), thread-local getters, health checks, open_database()
+│   │   ├── migrations.py      # PRAGMA user_version schema migration runner
+│   │   ├── schema_v1.sql      # Schema for stockmon.db (portfolios, status, snapshots, quotes)
+│   │   ├── schema_screener.sql# Hybrid schema for screener_cache.db (hot columns + payload)
+│   │   ├── backup.py          # Online backup API, gzip compression, GFS rotation, and restore
+│   │   └── repositories/      # Repository layer isolating all raw SQL
+│   │       ├── portfolios.py  # Portfolio and pending addition queries
+│   │       ├── quotes.py      # Quote cache queries
+│   │       ├── screener.py    # Screener day/row queries, bulk inserts, retention pruning
+│   │       ├── snapshots.py   # Tracker snapshot storage
+│   │       ├── stock_status.py# Stock status CRUD queries
+│   │       └── sync_state.py  # SSE sync_state version bump queries
 │   └── web/                   # Flask web application
 │       ├── __init__.py        # Flask app factory (serves frontend/dist)
-│       └── routes.py          # API route definitions and SSE event streaming
-└── scripts/                   # Windows Task Scheduler automation
+│       └── routes.py          # API route definitions, SSE stream, backup & restore endpoints
+└── scripts/                   # Windows Task Scheduler & migration automation scripts
+    ├── migrate_to_sqlite.py   # Re-runnable, idempotent JSON to SQLite database importer
+    ├── export_to_json.py      # Escape-hatch export from SQLite back to JSON
     ├── register_task.ps1      # Registers/updates the task in Windows Task Scheduler
     ├── run_scheduled.ps1      # PowerShell execution script run by Task Scheduler
     └── run_scheduled.bat      # Batch wrapper for run_scheduled.ps1
