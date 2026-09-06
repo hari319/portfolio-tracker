@@ -14,8 +14,7 @@ from .config_manager import load_settings
 from .data_fetcher import get_ticker_data
 from .ema import build_ema_matrix
 from .errors import DataFetchError
-from .jsonstore import read_json, write_json
-from .paths import SNAPSHOT_FILE
+from .db.repositories import snapshots as _snap_repo
 from .portfolio import (
     PORTFOLIO_NAMES,
     display_name,
@@ -40,7 +39,7 @@ def empty_snapshot(settings: dict[str, Any] | None = None) -> dict[str, Any]:
 
 def load_snapshot() -> dict[str, Any]:
     """Return the last persisted snapshot, or an empty one."""
-    snapshot = read_json(SNAPSHOT_FILE, default=None)
+    snapshot = _snap_repo.load_latest_snapshot()
     if not isinstance(snapshot, dict) or "portfolios" not in snapshot:
         return empty_snapshot()
     for name in PORTFOLIO_NAMES:
@@ -51,7 +50,7 @@ def load_snapshot() -> dict[str, Any]:
 
 
 def save_snapshot(snapshot: dict[str, Any]) -> None:
-    write_json(SNAPSHOT_FILE, snapshot)
+    _snap_repo.save_snapshot(snapshot)
 
 
 def build_row(symbol: str, settings: dict[str, Any] | None = None) -> dict[str, Any]:

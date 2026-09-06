@@ -34,12 +34,17 @@ QUOTES_CACHE_FILE = DATA_DIR / "quotes_cache.json"
 SCREENER_DIR = DATA_DIR / "screener"
 SCREENER_CACHE_FILE = DATA_DIR / "screener_cache.json"
 
+# SQLite database files (§4.1 of DATA_STORAGE_MIGRATION.md)
+DB_FILE = DATA_DIR / "stockmon.db"
+SCREENER_DB_FILE = DATA_DIR / "screener_cache.db"
+BACKUP_DIR = _dir_from_env("STOCKMON_BACKUP_DIR", BASE_DIR / "backups")
+
 APP_LOG_FILE = LOG_DIR / "app.log"
 SCHEDULER_LOG_FILE = LOG_DIR / "scheduler.log"
 ADDITIONS_LOG_FILE = LOG_DIR / "ticker_additions.log"
 
 
 def ensure_directories() -> None:
-    """Create the config/data/log directories if they do not exist yet."""
-    for directory in (CONFIG_DIR, DATA_DIR, LOG_DIR, SCREENER_DIR):
+    """Create the config/data/log/backup directories if they do not exist yet."""
+    for directory in (CONFIG_DIR, DATA_DIR, LOG_DIR, SCREENER_DIR, BACKUP_DIR):
         directory.mkdir(parents=True, exist_ok=True)

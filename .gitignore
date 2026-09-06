@@ -8,8 +8,11 @@ venv/
 config/settings.json
 config/portfolios.json
 data/
+backups/
 logs/
 *.corrupt
+*.db-wal
+*.db-shm
 
 # Frontend
 frontend/node_modules/

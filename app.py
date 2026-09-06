@@ -16,12 +16,15 @@ import time
 
 from stockmon.logging_config import configure_logging
 from stockmon.paths import APP_LOG_FILE, ensure_directories
+from stockmon.db import open_database, open_screener_cache
 from stockmon.web import create_app
 
 configure_logging(APP_LOG_FILE)
 logger = logging.getLogger("stockmon.app")
 
 ensure_directories()
+open_database()
+open_screener_cache()
 app = create_app()
 
 

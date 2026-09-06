@@ -15,21 +15,17 @@ import pandas as pd
 
 from datetime import datetime
 from .errors import DataFetchError
-from .jsonstore import read_json, write_json
-from .paths import QUOTES_CACHE_FILE
+from .db.repositories import quotes as _quotes_repo
 
 logger = logging.getLogger(__name__)
 
 
 def load_quotes_cache() -> dict[str, dict[str, Any]]:
-    cache = read_json(QUOTES_CACHE_FILE, default={})
-    return cache if isinstance(cache, dict) else {}
+    return _quotes_repo.load_quotes_cache()
 
 
 def save_quote_to_cache(symbol: str, quote: dict[str, Any]) -> None:
-    cache = load_quotes_cache()
-    cache[symbol] = quote
-    write_json(QUOTES_CACHE_FILE, cache)
+    _quotes_repo.save_quote(symbol, quote)
 
 
 def fetch_ticker_quote(symbol: str) -> dict[str, Any]:

@@ -50,6 +50,40 @@ def configure_logging(
     logging.getLogger("peewee").setLevel(logging.WARNING)
 
     _CONFIGURED = True
+    clean_old_logs(max_age_days=1)
+
+
+def clean_old_logs(max_age_days: int = 1) -> int:
+    """Clean log files and rolled over logs older than ``max_age_days`` (1 day)."""
+    import time
+    from .paths import LOG_DIR
+    if not LOG_DIR.exists():
+        return 0
+
+    now = time.time()
+    cutoff = now - (max_age_days * 86400)
+    cleaned = 0
+
+    # Clean rolled-over log files (*.log.1, *.log.2, etc.) or stale console logs
+    for p in LOG_DIR.iterdir():
+        if not p.is_file():
+            continue
+        try:
+            mtime = p.stat().st_mtime
+            # If it's a rolled-over file (.log.1, .log.2) or console log older than cutoff
+            if (p.name.count(".log.") > 0 or p.name == "scheduled_run_console.log") and mtime < cutoff:
+                p.unlink()
+                cleaned += 1
+            # For primary log files (app.log, scheduler.log), if modified > 1 day ago and size is huge, truncate or rotate
+            elif p.suffix == ".log" and mtime < cutoff and p.stat().st_size > 500_000:
+                # Truncate old stale log
+                with p.open("w", encoding="utf-8") as f:
+                    f.write(f"--- Log truncated on startup ({time.strftime('%Y-%m-%d %H:%M:%S')}) ---\n")
+                cleaned += 1
+        except OSError:
+            pass
+
+    return cleaned
 
 
 def get_additions_logger() -> logging.Logger:

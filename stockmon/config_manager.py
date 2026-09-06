@@ -32,6 +32,8 @@ DEFAULT_SETTINGS: dict[str, Any] = {
         "max_workers": 4,
         "retries": 2,
         "retry_backoff_seconds": 1.5,
+        # Matches the upstream API 60-day rolling window (§5.3 of DATA_STORAGE_MIGRATION.md)
+        "screener_retention_days": 60,
     },
     "ui": {
         "status_poll_seconds": 5,

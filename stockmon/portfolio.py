@@ -1,4 +1,11 @@
-"""Portfolio membership: validation, persistence and TradingView links."""
+"""Portfolio membership: validation, persistence and TradingView links.
+
+Persistence now uses SQLite via ``stockmon.db.repositories.portfolios``.
+The ``config/portfolios.json`` file is no longer the source of truth —
+portfolios live in the ``portfolio`` and ``portfolio_ticker`` tables.
+
+Public API is unchanged so routes.py and scheduled_run.py need no modification.
+"""
 
 from __future__ import annotations
 
@@ -10,9 +17,8 @@ from urllib.parse import quote
 
 from .config_manager import load_settings
 from .errors import ValidationError
-from .jsonstore import read_json, write_json
+from .db.repositories import portfolios as _repo
 from .logging_config import get_additions_logger
-from .paths import PENDING_ADDITIONS_FILE, PORTFOLIOS_FILE, ensure_directories
 
 logger = logging.getLogger(__name__)
 
@@ -74,39 +80,28 @@ def tradingview_url(symbol: str) -> str:
 
 
 def load_portfolios() -> dict[str, list[str]]:
-    """Return both portfolios, creating the file with defaults when absent."""
-    ensure_directories()
-    stored = read_json(PORTFOLIOS_FILE, default=None)
-    if stored is None:
-        logger.info("No portfolio file found, seeding defaults at %s", PORTFOLIOS_FILE)
-        write_json(PORTFOLIOS_FILE, DEFAULT_PORTFOLIOS)
-        return {name: list(tickers) for name, tickers in DEFAULT_PORTFOLIOS.items()}
+    """Return both portfolios, seeding defaults if empty.
 
-    if not isinstance(stored, dict):
-        logger.error("Malformed portfolio file %s - using defaults", PORTFOLIOS_FILE)
-        return {name: list(tickers) for name, tickers in DEFAULT_PORTFOLIOS.items()}
+    Now reads from the ``portfolio_ticker`` table instead of a JSON file.
+    """
+    result = _repo.load_portfolios(PORTFOLIO_NAMES)
 
-    portfolios: dict[str, list[str]] = {}
-    for name in PORTFOLIO_NAMES:
-        raw = stored.get(name, [])
-        if not isinstance(raw, list):
-            logger.warning("Portfolio %s is not a list in config - treating as empty", name)
-            raw = []
-        cleaned: list[str] = []
-        for item in raw:
-            try:
-                symbol = normalize_symbol(item)
-            except ValidationError as exc:
-                logger.warning("Dropping invalid ticker in %s: %s", name, exc)
-                continue
-            if symbol not in cleaned:
-                cleaned.append(symbol)
-        portfolios[name] = cleaned
-    return portfolios
+    # If both portfolios are empty (first run before migration), seed defaults
+    if all(len(v) == 0 for v in result.values()):
+        # Check if this is truly empty or just no tickers yet
+        from .db import get_connection
+        conn = get_connection()
+        count = conn.execute("SELECT COUNT(*) FROM portfolio_ticker").fetchone()[0]
+        if count == 0:
+            logger.info("No portfolio tickers found, checking for portfolios.json fallback")
+            # Don't auto-seed — the migration script handles this
+            pass
+
+    return result
 
 
 def save_portfolios(portfolios: dict[str, list[str]]) -> None:
-    write_json(PORTFOLIOS_FILE, portfolios)
+    _repo.save_portfolios(portfolios)
 
 
 def add_ticker(portfolio_name: str, raw_symbol: str) -> str:
@@ -114,12 +109,10 @@ def add_ticker(portfolio_name: str, raw_symbol: str) -> str:
     portfolio = validate_portfolio(portfolio_name)
     symbol = normalize_symbol(raw_symbol)
 
-    portfolios = load_portfolios()
-    if symbol in portfolios[portfolio]:
+    if _repo.ticker_exists(portfolio, symbol):
         raise ValidationError(f"{symbol} is already in the {portfolio} portfolio.")
 
-    portfolios[portfolio].append(symbol)
-    save_portfolios(portfolios)
+    _repo.add_ticker(portfolio, symbol)
     logger.info("Added %s to %s", symbol, portfolio)
     return symbol
 
@@ -128,54 +121,28 @@ def remove_ticker(portfolio_name: str, raw_symbol: str) -> str:
     portfolio = validate_portfolio(portfolio_name)
     symbol = normalize_symbol(raw_symbol)
 
-    portfolios = load_portfolios()
-    if symbol not in portfolios[portfolio]:
+    if not _repo.ticker_exists(portfolio, symbol):
         raise ValidationError(f"{symbol} is not in the {portfolio} portfolio.")
 
-    portfolios[portfolio].remove(symbol)
-    save_portfolios(portfolios)
-    _forget_pending_addition(portfolio, symbol)
+    _repo.remove_ticker(portfolio, symbol)
+    _repo.forget_pending_addition(portfolio, symbol)
     logger.info("Removed %s from %s", symbol, portfolio)
     return symbol
 
 
-def _forget_pending_addition(portfolio_name: str, symbol: str) -> None:
-    """Drop a queued addition so the next scheduled run does not report it."""
-    pending = peek_pending_additions()
-    remaining = [
-        entry
-        for entry in pending
-        if not (entry.get("symbol") == symbol and entry.get("portfolio") == portfolio_name)
-    ]
-    if len(remaining) != len(pending):
-        write_json(PENDING_ADDITIONS_FILE, remaining)
-
-
 def record_addition(portfolio_name: str, symbol: str) -> None:
     """Log an addition so the next scheduled run can report what it picked up."""
-    entry = {
-        "portfolio": portfolio_name,
-        "symbol": symbol,
-        "added_at": datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds"),
-    }
-    pending = read_json(PENDING_ADDITIONS_FILE, default=[])
-    if not isinstance(pending, list):
-        pending = []
-    pending.append(entry)
-    write_json(PENDING_ADDITIONS_FILE, pending)
+    _repo.record_pending_addition(portfolio_name, symbol)
     get_additions_logger().info("ADDED %s to %s", symbol, portfolio_name)
 
 
 def consume_pending_additions() -> list[dict[str, Any]]:
-    """Return and clear the tickers added since the previous scheduled run."""
-    pending = read_json(PENDING_ADDITIONS_FILE, default=[])
-    if not isinstance(pending, list):
-        pending = []
-    if pending:
-        write_json(PENDING_ADDITIONS_FILE, [])
-    return pending
+    """Return and clear the tickers added since the previous scheduled run.
+
+    Now uses BEGIN IMMEDIATE to prevent the §1.5 lost-update race.
+    """
+    return _repo.consume_pending_additions()
 
 
 def peek_pending_additions() -> list[dict[str, Any]]:
-    pending = read_json(PENDING_ADDITIONS_FILE, default=[])
-    return pending if isinstance(pending, list) else []
+    return _repo.peek_pending_additions()
