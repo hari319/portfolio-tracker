@@ -43,11 +43,25 @@ def _v1_initial_schema(conn: sqlite3.Connection) -> None:
     conn.executescript(_read_sql("schema_v1.sql"))
 
 
+def _v2_portfolio_tracker(conn: sqlite3.Connection) -> None:
+    """Create Portfolio Tracker tables (schema_v2.sql)."""
+    conn.executescript(_read_sql("schema_v2.sql"))
+
+
+def _v3_invested_amount(conn: sqlite3.Connection) -> None:
+    """Add invested_amount to buy_lot to support manual cost basis/demergers."""
+    try:
+        conn.execute("ALTER TABLE buy_lot ADD COLUMN invested_amount REAL")
+    except Exception:
+        pass
+
+
 # Append-only list: (version_number, callable).
 # NEVER edit or renumber a shipped migration.
 MIGRATIONS: list[tuple[int, callable]] = [
     (1, _v1_initial_schema),
-    # (2, _v2_portfolio_tracker),   # future: §5.4 tables
+    (2, _v2_portfolio_tracker),
+    (3, _v3_invested_amount),
 ]
 
 

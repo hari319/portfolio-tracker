@@ -13,8 +13,9 @@ Detailed feature guides, formulas, screening criteria, and workflows have been m
 | Tab | Documentation | Description |
 | :--- | :--- | :--- |
 | **Tab 1: Tracker** | [**Portfolio Monitor Guide**](docs/TAB1_PORTFOLIO_MONITOR.md) | Multi-portfolio tracking (BAPA & MADI), 10 stacked Daily/Weekly EMAs, priority sorting, SELL/HOLD signals, NSE/BSE auto-switching, and ticker management. |
-| **Tab 2: Status** | [**Stock Status & Scenario Analysis**](docs/TAB2_STOCK_STATUS.md) | Valuation journal, Base/Bull/Bear targets & CAGR %, Best Entry tracking, live price comparisons, and multi-date analysis versioning. |
-| **Tab 3: Screener** | [**Market Screener & Predictive Analysis**](docs/TAB3_MARKET_SCREENER.md) | Broad-market scanning (>3,400 NSE stocks), automated daily `X-WP-Nonce` lifecycle, 154-column table, 1-click strategy presets, custom filter builder, and multi-day trajectory engine. |
+| **Tab 2: Portfolio Tracker** | [**Portfolio Tracker Guide**](docs/PORTFOLIO_TRACKER.md) | Transactional holdings ledger (MADI, BAPA, LOAN), multi-buy aggregation, realized sold records, dividends, loan balance sheet, and full Excel round-trip import/export. |
+| **Tab 3: Status** | [**Stock Status & Scenario Analysis**](docs/TAB2_STOCK_STATUS.md) | Valuation journal, Base/Bull/Bear targets & CAGR %, Best Entry tracking, live price comparisons, and multi-date analysis versioning. |
+| **Tab 4: Screener** | [**Market Screener & Predictive Analysis**](docs/TAB3_MARKET_SCREENER.md) | Broad-market scanning (>3,400 NSE stocks), automated daily `X-WP-Nonce` lifecycle, 154-column table, 1-click strategy presets, custom filter builder, and multi-day trajectory engine. |
 | **Architecture** | [**Knowledge Graph & Module Map**](docs/KNOWLEDGE_GRAPH.md) | Complete codebase architecture, component interactions, data stores, and developer onboarding reference. |
 
 ---

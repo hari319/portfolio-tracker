@@ -1,6 +1,8 @@
 import React, { useState, useEffect } from 'react';
 import { X, Search, CheckCircle, AlertCircle, RefreshCw } from 'lucide-react';
 import * as api from '../api';
+import { formatDate } from '../utils/date';
+
 
 export default function AddStatusModal({
   isOpen,
@@ -285,8 +287,9 @@ export default function AddStatusModal({
                 Price of Analysis{' '}
                 <span className="text-muted fw-normal">
                   {isEditMode && editModeType === 'existing'
-                    ? `(Fixed from analysis on ${editItem?.date_of_analysis || 'record'})`
+                    ? `(Fixed from analysis on ${formatDate(editItem?.date_of_analysis) || 'record'})`
                     : '(Auto-filled from Live Fetch)'}
+
                 </span>
               </label>
               {isEditMode && editModeType === 'new' && (

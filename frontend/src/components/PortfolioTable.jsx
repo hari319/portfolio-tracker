@@ -22,7 +22,7 @@ export default function PortfolioTable({
       <table className="table-stock">
         <thead>
           <tr>
-            <th style={{ width: '220px' }}>Ticker</th>
+            <th className="col-sticky-ticker" style={{ width: '220px' }}>Ticker</th>
             <th style={{ width: '130px' }}>Current Price</th>
             <th style={{ width: '90px' }}>Signal</th>
             {periods.map((period) => (
@@ -42,7 +42,7 @@ export default function PortfolioTable({
             return (
               <tr key={row.symbol} className={isError ? 'row-error' : ''}>
                 {/* Ticker Column */}
-                <td>
+                <td className="col-sticky-ticker">
                   <div className="col-ticker-wrap">
                     <div className="d-flex align-items-center gap-1">
                       <a

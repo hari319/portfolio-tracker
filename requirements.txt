@@ -5,3 +5,8 @@ numpy>=1.24.0
 # Windows does not ship the IANA time zone database used by zoneinfo.
 tzdata>=2024.1
 pywebview>=5.0
+# Portfolio Tracker sheet import/export (stockmon/sheet_io.py)
+openpyxl>=3.1.0
+
+# Development
+pytest>=8.0.0

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from datetime import datetime
+import io
 import json
 import logging
 import threading
@@ -523,6 +525,476 @@ def api_screener_rebuild():
     except Exception as exc:
         logger.exception("Screener rebuild failed")
         return jsonify({"ok": False, "error": str(exc)}), 500
+
+
+# ---------------------------------------------------------------------------
+# Portfolio Tracker API (§1-§8)
+# ---------------------------------------------------------------------------
+
+@bp.get("/api/portfolio-tracker/<portfolio>")
+def api_portfolio_tracker_data(portfolio: str):
+    """Fetch complete holdings, sold, dividends, totals, and summary for a portfolio."""
+    port_name = portfolio.strip().upper()
+    if port_name not in ("MADI", "BAPA", "LOAN"):
+        return jsonify({"ok": False, "error": f"Invalid portfolio: {portfolio}"}), 400
+
+    from ..db.repositories import dividends as div_repo
+    from ..db.repositories import holdings as hold_repo
+    from ..db.repositories import quotes as quote_repo
+    from ..db.repositories import summary as sum_repo
+    from ..portfolio_tracker import (
+        compute_summary_panel,
+        compute_totals,
+        enrich_holding_row,
+        enrich_sold_row,
+    )
+
+    quotes_cache = quote_repo.load_quotes_cache()
+
+    # Open holdings with child buy lots
+    open_raw = hold_repo.list_holdings(port_name, status="open")
+    enriched_open = []
+    for h in open_raw:
+        lots = hold_repo.get_lots(h["id"])
+        sym = h["symbol"]
+        bare = sym.split(".")[0]
+        quote = next(
+            (
+                quotes_cache[key]
+                for key in (sym, bare, f"{bare}.NS", f"{bare}.BO")
+                if key in quotes_cache
+            ),
+            None,
+        )
+        live_price = quote["price"] if quote and quote.get("price") else None
+        enriched_open.append(enrich_holding_row(h, live_price=live_price, lots=lots))
+
+    open_totals = compute_totals(enriched_open)
+
+    # Sold holdings
+    sold_raw = hold_repo.list_holdings(port_name, status="sold")
+    enriched_sold = [enrich_sold_row(s) for s in sold_raw]
+    sold_totals = compute_totals(enriched_sold)
+
+    # Dividends
+    dividends = div_repo.list_dividends(port_name)
+    total_div = div_repo.total_dividends(port_name)
+
+    # Summary panel
+    summary_data = None
+    if port_name == "LOAN":
+        sum_vals = sum_repo.get_all()
+        loan_earned = open_totals["earned"] + sold_totals["earned"]
+        loan_loss = open_totals["loss"] + sold_totals["loss"]
+        loan_stock_invest = open_totals["invested_amount"]
+        summary_data = compute_summary_panel(
+            sum_vals,
+            loan_earned=loan_earned,
+            loan_loss=loan_loss,
+            loan_dividends=total_div,
+            loan_stock_invest=loan_stock_invest,
+        )
+
+    return jsonify({
+        "ok": True,
+        "portfolio": port_name,
+        "open_holdings": enriched_open,
+        "sold_holdings": enriched_sold,
+        "open_totals": open_totals,
+        "sold_totals": sold_totals,
+        "dividends": dividends,
+        "total_dividends": round(total_div, 2),
+        "summary": summary_data,
+    })
+
+
+# Not every holding is an NSE stock, so a bare ticker is tried against both exchanges.
+_TICKER_SUFFIXES = (".NS", ".BO")
+
+
+def _resolve_ticker(raw_symbol: str) -> dict:
+    """Resolve a ticker to the exchange-suffixed symbol that actually quotes.
+
+    Returns ``{symbol, name, price, found}`` where ``found`` reports whether a real
+    company name (not just the ticker) could be fetched — §3's confirmation trigger.
+    """
+    from ..db.repositories import quotes as quote_repo
+
+    sym = (raw_symbol or "").strip().upper().replace(" ", "")
+    if not sym:
+        return {"symbol": "", "name": "", "price": None, "found": False}
+
+    if "." in sym or sym.startswith("^"):
+        candidates = [sym]
+    else:
+        candidates = [f"{sym}{suffix}" for suffix in _TICKER_SUFFIXES]
+
+    for cand in [sym, *candidates]:
+        cached = quote_repo.get_quote(cand)
+        if cached and cached.get("price"):
+            name = (cached.get("name") or "").strip()
+            resolved_name = "" if name.upper() in ("", cand, sym) else name
+            return {
+                "symbol": cand,
+                "name": resolved_name,
+                "price": cached.get("price"),
+                "found": bool(resolved_name),
+            }
+
+    from ..data_fetcher import fetch_ticker_quote
+
+    for cand in candidates:
+        try:
+            res = fetch_ticker_quote(cand)
+        except Exception as exc:
+            logger.info("Ticker lookup failed for %s: %s", cand, exc)
+            continue
+        if not res.get("price"):
+            continue
+        name = (res.get("name") or "").strip()
+        resolved_name = "" if name.upper() in ("", cand, sym) else name
+        return {
+            "symbol": cand,
+            "name": resolved_name,
+            "price": res.get("price"),
+            "found": bool(resolved_name),
+        }
+
+    return {"symbol": candidates[0], "name": "", "price": None, "found": False}
+
+
+@bp.get("/api/portfolio-tracker/lookup-ticker")
+def api_portfolio_tracker_lookup_ticker():
+    """Look up stock name and quote for a ticker symbol."""
+    sym = (request.args.get("symbol") or "").strip().upper()
+    if not sym:
+        return jsonify({"ok": False, "error": "Symbol is required."}), 400
+
+    res = _resolve_ticker(sym)
+    return jsonify({
+        "ok": True,
+        "symbol": sym,
+        "resolved_symbol": res["symbol"],
+        "name": res["name"],
+        "price": res["price"],
+        "found": res["found"],
+    })
+
+
+@bp.post("/api/portfolio-tracker/holding")
+def api_portfolio_tracker_add_holding():
+    """Add a new open holding / buy lot."""
+    payload = request.get_json(silent=True) or request.form
+    portfolio = (payload.get("portfolio") or "").strip().upper()
+    symbol = (payload.get("symbol") or "").strip().upper()
+    invest_date = (payload.get("invest_date") or "").strip()
+    quantity = float(payload.get("quantity") or 0.0)
+    avg_price = float(payload.get("avg_price") or 0.0)
+
+    if not portfolio or not symbol or quantity <= 0 or avg_price <= 0:
+        return jsonify({"ok": False, "error": "portfolio, symbol, quantity (>0), and avg_price (>0) are required."}), 400
+
+    from ..db.backup import create_backup
+    from ..db.repositories import holdings as hold_repo
+
+    resolved = _resolve_ticker(symbol)
+    stored_symbol = resolved["symbol"] or symbol
+
+    scheme_name = (payload.get("scheme_name") or "").strip()
+    name_confirmed = bool(payload.get("name_confirmed"))
+
+    if scheme_name:
+        # §3: a name the user typed must be confirmed before it is saved.
+        if not name_confirmed and scheme_name.casefold() != (resolved["name"] or "").casefold():
+            return jsonify({
+                "ok": False,
+                "requires_confirmation": True,
+                "error": f"Please confirm the scheme name '{scheme_name}' before saving.",
+            }), 400
+        name_confirmed = True
+    elif resolved["found"]:
+        scheme_name = resolved["name"]
+        name_confirmed = True
+    else:
+        return jsonify({
+            "ok": False,
+            "requires_confirmation": True,
+            "error": f"Could not fetch a stock name for '{symbol}'. Enter the name manually and confirm it.",
+        }), 400
+
+    person = (payload.get("person") or "").strip().upper() if portfolio == "LOAN" else None
+    remarks = (payload.get("remarks") or "").strip() or None
+    bought_reason = (payload.get("bought_reason") or "").strip() or None
+
+    holding_id, lot_id = hold_repo.add_holding(
+        portfolio_name=portfolio,
+        symbol=stored_symbol,
+        scheme_name=scheme_name,
+        invest_date=invest_date or datetime.now().strftime("%Y-%m-%d"),
+        quantity=quantity,
+        avg_price=avg_price,
+        person=person,
+        remarks=remarks,
+        name_confirmed=name_confirmed,
+        bought_reason=bought_reason,
+    )
+
+    try:
+        create_backup()
+    except Exception as exc:
+        logger.warning("Auto backup after adding holding failed: %s", exc)
+
+    return jsonify({
+        "ok": True,
+        "holding_id": holding_id,
+        "lot_id": lot_id,
+        "symbol": stored_symbol,
+        "message": f"Successfully added holding for {stored_symbol} in {portfolio}.",
+    })
+
+
+@bp.post("/api/portfolio-tracker/lot")
+def api_portfolio_tracker_add_lot():
+    """Add a child buy lot to an existing holding."""
+    payload = request.get_json(silent=True) or request.form
+    holding_id = int(payload.get("holding_id") or 0)
+    invest_date = (payload.get("invest_date") or "").strip()
+    quantity = float(payload.get("quantity") or 0.0)
+    avg_price = float(payload.get("avg_price") or 0.0)
+    remarks = (payload.get("remarks") or "").strip() or None
+
+    if holding_id <= 0 or quantity <= 0 or avg_price <= 0:
+        return jsonify({"ok": False, "error": "Valid holding_id, quantity, and avg_price required."}), 400
+
+    from ..db.backup import create_backup
+    from ..db.repositories import holdings as hold_repo
+
+    lot_id = hold_repo.add_buy_lot(
+        holding_id=holding_id,
+        invest_date=invest_date or datetime.now().strftime("%Y-%m-%d"),
+        quantity=quantity,
+        avg_price=avg_price,
+        remarks=remarks,
+    )
+
+    try:
+        create_backup()
+    except Exception:
+        pass
+
+    return jsonify({"ok": True, "lot_id": lot_id, "message": "Buy lot added successfully."})
+
+
+@bp.delete("/api/portfolio-tracker/holding/<int:holding_id>")
+def api_portfolio_tracker_delete_holding(holding_id: int):
+    """Delete a holding and its associated buy lots."""
+    from ..db.backup import create_backup
+    from ..db.repositories import holdings as hold_repo
+
+    deleted = hold_repo.delete_holding(holding_id)
+    if not deleted:
+        return jsonify({"ok": False, "error": f"Holding {holding_id} not found."}), 404
+
+    try:
+        create_backup()
+    except Exception:
+        pass
+
+    return jsonify({"ok": True, "message": f"Holding {holding_id} deleted."})
+
+
+@bp.delete("/api/portfolio-tracker/lot/<int:lot_id>")
+def api_portfolio_tracker_delete_lot(lot_id: int):
+    """Delete a single buy lot."""
+    from ..db.backup import create_backup
+    from ..db.repositories import holdings as hold_repo
+
+    deleted = hold_repo.delete_lot(lot_id)
+    if not deleted:
+        return jsonify({"ok": False, "error": f"Lot {lot_id} not found."}), 404
+
+    try:
+        create_backup()
+    except Exception:
+        pass
+
+    return jsonify({"ok": True, "message": f"Lot {lot_id} deleted."})
+
+
+@bp.post("/api/portfolio-tracker/sell")
+def api_portfolio_tracker_sell():
+    """Sell a holding, moving it to the Sold table."""
+    payload = request.get_json(silent=True) or request.form
+    holding_id = int(payload.get("holding_id") or 0)
+    sell_date = (payload.get("sell_date") or "").strip() or datetime.now().strftime("%Y-%m-%d")
+    sell_price = float(payload.get("sell_price") or 0.0)
+    quantity = float(payload["quantity"]) if payload.get("quantity") else None
+    remarks = (payload.get("remarks") or "").strip() or None
+    sold_reason = (payload.get("sold_reason") or "").strip() or None
+    mistake_learned = (payload.get("mistake_learned") or "").strip() or None
+
+    if holding_id <= 0 or sell_price <= 0:
+        return jsonify({"ok": False, "error": "holding_id and sell_price (>0) are required."}), 400
+
+    from ..db.backup import create_backup
+    from ..db.repositories import holdings as hold_repo
+
+    try:
+        sale_id = hold_repo.sell_holding(
+            holding_id=holding_id,
+            sell_date=sell_date,
+            sell_price=sell_price,
+            quantity=quantity,
+            remarks=remarks,
+            sold_reason=sold_reason,
+            mistake_learned=mistake_learned,
+        )
+        try:
+            create_backup()
+        except Exception:
+            pass
+
+        return jsonify({"ok": True, "sale_id": sale_id, "message": "Holding sold successfully."})
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 500
+
+
+@bp.put("/api/portfolio-tracker/notes/<int:holding_id>")
+def api_portfolio_tracker_update_notes(holding_id: int):
+    """Update §6 note fields: bought_reason, sold_reason, mistake_learned."""
+    payload = request.get_json(silent=True) or request.form
+    from ..db.repositories import holdings as hold_repo
+
+    updated = hold_repo.update_notes(
+        holding_id=holding_id,
+        bought_reason=payload.get("bought_reason"),
+        sold_reason=payload.get("sold_reason"),
+        mistake_learned=payload.get("mistake_learned"),
+    )
+    if not updated:
+        return jsonify({"ok": False, "error": f"Holding {holding_id} not found."}), 404
+
+    return jsonify({"ok": True, "message": "Notes updated successfully."})
+
+
+@bp.get("/api/portfolio-tracker/mistakes")
+def api_portfolio_tracker_list_mistakes():
+    """List all holdings with lessons/mistakes recorded (§6 follow-up)."""
+    from ..db.repositories import holdings as hold_repo
+    mistakes = hold_repo.list_all_mistakes()
+    return jsonify({"ok": True, "mistakes": mistakes})
+
+
+@bp.post("/api/portfolio-tracker/dividend")
+def api_portfolio_tracker_add_dividend():
+    """Add a dividend record."""
+    payload = request.get_json(silent=True) or request.form
+    portfolio = (payload.get("portfolio") or "").strip().upper()
+    symbol = (payload.get("symbol") or "").strip().upper()
+    value = float(payload.get("value") or 0.0)
+    received_date = (payload.get("received_date") or "").strip() or datetime.now().strftime("%Y-%m-%d")
+
+    if not portfolio or not symbol or value <= 0:
+        return jsonify({"ok": False, "error": "portfolio, symbol, and value (>0) are required."}), 400
+
+    from ..db.repositories import dividends as div_repo
+    div_id = div_repo.add_dividend(portfolio, symbol, value, received_date)
+    return jsonify({"ok": True, "dividend_id": div_id, "message": f"Dividend recorded for {symbol}."})
+
+
+@bp.delete("/api/portfolio-tracker/dividend/<int:dividend_id>")
+def api_portfolio_tracker_delete_dividend(dividend_id: int):
+    """Delete a dividend record."""
+    from ..db.repositories import dividends as div_repo
+    deleted = div_repo.delete_dividend(dividend_id)
+    if not deleted:
+        return jsonify({"ok": False, "error": "Dividend not found."}), 404
+    return jsonify({"ok": True, "message": "Dividend deleted."})
+
+
+@bp.get("/api/portfolio-tracker/summary")
+def api_portfolio_tracker_get_summary():
+    """Get Summary panel values."""
+    from ..db.repositories import summary as sum_repo
+    return jsonify({"ok": True, "values": sum_repo.get_all_rows()})
+
+
+@bp.put("/api/portfolio-tracker/summary")
+def api_portfolio_tracker_update_summary():
+    """Update a fixed value in the Summary panel."""
+    payload = request.get_json(silent=True) or request.form
+    key = (payload.get("key") or "").strip()
+    val = float(payload.get("value") or 0.0)
+    label = payload.get("label")
+
+    if not key:
+        return jsonify({"ok": False, "error": "Key is required."}), 400
+
+    from ..db.repositories import summary as sum_repo
+    sum_repo.upsert(key, val, label)
+    return jsonify({"ok": True, "message": f"Updated summary field {key}."})
+
+
+@bp.post("/api/portfolio-tracker/import")
+def api_portfolio_tracker_import():
+    """Upload and import Excel workbook (Invest.xlsx) into Portfolio Tracker."""
+    replace = request.args.get("replace", "false").lower() in ("true", "1", "yes")
+
+    from ..paths import BASE_DIR
+    from ..sheet_io import import_workbook
+
+    file = request.files.get("file")
+    if file:
+        file_bytes = io.BytesIO(file.read())
+        res = import_workbook(file_bytes, replace=replace)
+    else:
+        # Check if default Invest.xlsx exists in root directory
+        default_file = BASE_DIR / "Invest.xlsx"
+        if default_file.exists():
+            res = import_workbook(default_file, replace=replace)
+        else:
+            return jsonify({"ok": False, "error": "No file uploaded and Invest.xlsx not found."}), 400
+
+    return jsonify(res)
+
+
+@bp.get("/api/portfolio-tracker/export")
+def api_portfolio_tracker_export():
+    """Export current Portfolio Tracker database into standard Invest.xlsx or CSV format."""
+    from flask import send_file
+    from ..sheet_io import export_csv, export_workbook
+
+    portfolio = request.args.get("portfolio")
+    fmt = (request.args.get("format") or "xlsx").strip().lower()
+    stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    port_label = portfolio.upper() if portfolio else "ALL"
+
+    if fmt == "csv":
+        # CSV is one sheet per file, so a portfolio must be named explicitly.
+        if port_label not in ("MADI", "BAPA", "LOAN"):
+            return jsonify({
+                "ok": False,
+                "error": "CSV export requires ?portfolio=MADI|BAPA|LOAN.",
+            }), 400
+        buf = io.BytesIO()
+        export_csv(buf, portfolio=port_label)
+        buf.seek(0)
+        return send_file(
+            buf,
+            as_attachment=True,
+            download_name=f"Portfolio_Tracker_{port_label}_{stamp}.csv",
+            mimetype="text/csv",
+        )
+
+    buf = io.BytesIO()
+    export_workbook(buf, portfolio=portfolio)
+    buf.seek(0)
+    return send_file(
+        buf,
+        as_attachment=True,
+        download_name=f"Portfolio_Tracker_{port_label}_{stamp}.xlsx",
+        mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    )
 
 
 

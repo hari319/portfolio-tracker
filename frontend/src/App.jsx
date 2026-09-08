@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
-import { Activity, Target, SlidersHorizontal } from 'lucide-react';
+import { Activity, Target, SlidersHorizontal, PieChart } from 'lucide-react';
 import * as api from './api';
 import Header from './components/Header';
 import AddTickerPanel from './components/AddTickerPanel';
@@ -8,6 +8,7 @@ import ErrorsPanel from './components/ErrorsPanel';
 import PortfolioSection from './components/PortfolioSection';
 import StatusTab from './components/StatusTab';
 import ScreenerTab from './components/ScreenerTab';
+import PortfolioTrackerTab from './components/PortfolioTrackerTab';
 import Toast from './components/Toast';
 import Footer from './components/Footer';
 
@@ -193,6 +194,14 @@ export default function App() {
         </button>
         <button
           type="button"
+          className={`tab-nav-item ${activeTab === 'portfolio-tracker' ? 'active' : ''}`}
+          onClick={() => setActiveTab('portfolio-tracker')}
+        >
+          <PieChart size={16} />
+          <span>Portfolio Tracker</span>
+        </button>
+        <button
+          type="button"
           className={`tab-nav-item ${activeTab === 'status' ? 'active' : ''}`}
           onClick={() => setActiveTab('status')}
         >
@@ -248,6 +257,10 @@ export default function App() {
             ))}
           </main>
         </>
+      )}
+
+      {activeTab === 'portfolio-tracker' && (
+        <PortfolioTrackerTab showToast={showToast} />
       )}
 
       {activeTab === 'status' && (

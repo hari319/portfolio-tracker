@@ -1,5 +1,6 @@
 import React from 'react';
 import { RefreshCw } from 'lucide-react';
+import { formatDateTime } from '../utils/date';
 
 export default function Header({
   generatedAt,
@@ -11,10 +12,10 @@ export default function Header({
 }) {
   const formatUpdated = (iso) => {
     if (!iso) return 'No data yet — click “Refresh now”.';
-    const date = new Date(iso);
-    const timeStr = isNaN(date.getTime()) ? iso : date.toLocaleString();
+    const timeStr = formatDateTime(iso);
     return `Updated ${timeStr} ${source ? `(${source})` : ''}`;
   };
+
 
   return (
     <header className="app-header">
