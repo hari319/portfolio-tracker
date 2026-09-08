@@ -159,8 +159,15 @@ def api_add_ticker():
     portfolio = validate_portfolio(payload.get("portfolio", ""))
     symbol = normalize_symbol(payload.get("symbol", ""))
 
-    if symbol in load_portfolios()[portfolio]:
-        raise ValidationError(f"{symbol} is already in the {portfolio} portfolio.")
+    from ..portfolio import load_tracker_portfolios_meta
+    port_meta = load_tracker_portfolios_meta((portfolio,)).get(portfolio, {})
+    bare = symbol.split(".")[0]
+    matched_meta = next(
+        (m for s, m in port_meta.items() if s == symbol or s.split(".")[0] == bare),
+        None,
+    )
+    if matched_meta and matched_meta.get("is_manual"):
+        raise ValidationError(f"{matched_meta['symbol']} is already in the {portfolio} portfolio.")
 
     # Fetch immediately so the row appears without waiting for a scheduled run.
     row = build_row(symbol)
@@ -169,20 +176,50 @@ def api_add_ticker():
             f"Could not fetch data for {symbol} ({row['error']}). The ticker was not added."
         )
 
-    add_ticker(portfolio, symbol)
-    record_addition(portfolio, symbol)
+    # Use the resolved exchange symbol if switched (e.g. .BO if .NS was not available)
+    target_symbol = row.get("fetch_symbol") or symbol
+    if target_symbol != symbol:
+        row["symbol"] = target_symbol
+
+    add_ticker(portfolio, target_symbol)
+    record_addition(portfolio, target_symbol)
+
+    # Attach sourced metadata if ticker already exists in Portfolio Tracker
+    meta = port_meta.get(target_symbol) or port_meta.get(symbol, {})
+    row["avg_price"] = meta.get("avg_price")
+    row["is_sourced"] = meta.get("is_sourced", False)
+    row["is_manual"] = True
+    if meta.get("stock_name"):
+        row["name"] = meta["stock_name"]
+
     snapshot = upsert_row(portfolio, row)
 
-    return jsonify(_tables_payload(snapshot, f"{symbol} added to {portfolio} and fetched live."))
+    return jsonify(_tables_payload(snapshot, f"{target_symbol} added to {portfolio} and fetched live."))
 
 
 @bp.delete("/api/tickers")
 def api_remove_ticker():
     payload = request.get_json(silent=True) or request.form
     portfolio = validate_portfolio(payload.get("portfolio", ""))
-    symbol = remove_ticker(portfolio, payload.get("symbol", ""))
-    snapshot = drop_row(portfolio, symbol)
-    return jsonify(_tables_payload(snapshot, f"{symbol} removed from {portfolio}."))
+    raw_symbol = payload.get("symbol", "")
+    symbol = remove_ticker(portfolio, raw_symbol)
+
+    from ..portfolio import load_tracker_portfolios_meta
+    port_meta = load_tracker_portfolios_meta((portfolio,)).get(portfolio, {})
+    if symbol not in port_meta:
+        snapshot = drop_row(portfolio, symbol)
+        msg = f"{symbol} removed from {portfolio}."
+    else:
+        # Sourced record remains, only manual record was removed
+        snapshot = load_snapshot()
+        for r in snapshot.get("portfolios", {}).get(portfolio, {}).get("rows", []):
+            if r.get("symbol") == symbol:
+                r["is_manual"] = False
+                break
+        save_snapshot(snapshot)
+        msg = f"{symbol} manual entry removed; still tracked via Portfolio Tracker."
+
+    return jsonify(_tables_payload(snapshot, msg))
 
 
 @bp.get("/api/schedule")
@@ -664,6 +701,59 @@ def _resolve_ticker(raw_symbol: str) -> dict:
     return {"symbol": candidates[0], "name": "", "price": None, "found": False}
 
 
+def _get_tracker_port(portfolio: str, person: str | None = None) -> str | None:
+    port = (portfolio or "").strip().upper()
+    p = (person or "").strip().upper()
+    if port == "MADI" or (port == "LOAN" and p == "MADI"):
+        return "MADI"
+    if port == "BAPA" or (port == "LOAN" and p == "BAPA"):
+        return "BAPA"
+    return None
+
+
+def _sync_tracker_tab_symbol(tracker_port: str | None, symbol: str) -> None:
+    """Sync a single symbol in Tracker tab snapshot after changes in Portfolio Tracker."""
+    if not tracker_port or not symbol:
+        return
+    try:
+        from ..portfolio import load_tracker_portfolios_meta, normalize_symbol
+        from ..service import build_row, drop_row, load_snapshot, save_snapshot, upsert_row
+        try:
+            norm_sym = normalize_symbol(symbol)
+        except Exception:
+            norm_sym = symbol.strip().upper()
+
+        meta_dict = load_tracker_portfolios_meta((tracker_port,)).get(tracker_port, {})
+        if norm_sym not in meta_dict:
+            drop_row(tracker_port, norm_sym, source="holding-removed")
+        else:
+            meta = meta_dict[norm_sym]
+            snap = load_snapshot()
+            rows = snap.get("portfolios", {}).get(tracker_port, {}).get("rows", [])
+            found = False
+            for r in rows:
+                if r.get("symbol") == norm_sym:
+                    r["avg_price"] = meta.get("avg_price")
+                    r["is_sourced"] = meta.get("is_sourced", False)
+                    r["is_manual"] = meta.get("is_manual", False)
+                    if meta.get("stock_name"):
+                        r["name"] = meta["stock_name"]
+                    found = True
+                    break
+            if found:
+                save_snapshot(snap)
+            else:
+                row = build_row(norm_sym)
+                row["avg_price"] = meta.get("avg_price")
+                row["is_sourced"] = meta.get("is_sourced", False)
+                row["is_manual"] = meta.get("is_manual", False)
+                if meta.get("stock_name"):
+                    row["name"] = meta["stock_name"]
+                upsert_row(tracker_port, row, source="holding-synced")
+    except Exception as exc:
+        logger.warning("Failed to sync Tracker tab for %s in %s: %s", symbol, tracker_port, exc)
+
+
 @bp.get("/api/portfolio-tracker/lookup-ticker")
 def api_portfolio_tracker_lookup_ticker():
     """Look up stock name and quote for a ticker symbol."""
@@ -739,6 +829,11 @@ def api_portfolio_tracker_add_holding():
     except Exception as exc:
         logger.warning("Auto backup after adding holding failed: %s", exc)
 
+    # Sync into Tracker tab
+    t_port = _get_tracker_port(portfolio, person)
+    if t_port:
+        _sync_tracker_tab_symbol(t_port, stored_symbol)
+
     return jsonify({
         "ok": True,
         "holding_id": holding_id,
@@ -765,6 +860,8 @@ def api_portfolio_tracker_add_lot():
     from ..db.backup import create_backup
     from ..db.repositories import holdings as hold_repo
 
+    holding = hold_repo.get_holding(holding_id)
+
     lot_id = hold_repo.add_buy_lot(
         holding_id=holding_id,
         invest_date=invest_date or datetime.now().strftime("%Y-%m-%d"),
@@ -778,6 +875,10 @@ def api_portfolio_tracker_add_lot():
     except Exception:
         pass
 
+    if holding:
+        t_port = _get_tracker_port(holding.get("portfolio_name"), holding.get("person"))
+        _sync_tracker_tab_symbol(t_port, holding.get("symbol"))
+
     return jsonify({"ok": True, "lot_id": lot_id, "message": "Buy lot added successfully."})
 
 
@@ -786,6 +887,10 @@ def api_portfolio_tracker_delete_holding(holding_id: int):
     """Delete a holding and its associated buy lots."""
     from ..db.backup import create_backup
     from ..db.repositories import holdings as hold_repo
+
+    holding = hold_repo.get_holding(holding_id)
+    t_port = _get_tracker_port(holding["portfolio_name"], holding.get("person")) if holding else None
+    h_sym = holding["symbol"] if holding else None
 
     deleted = hold_repo.delete_holding(holding_id)
     if not deleted:
@@ -796,6 +901,9 @@ def api_portfolio_tracker_delete_holding(holding_id: int):
     except Exception:
         pass
 
+    if t_port and h_sym:
+        _sync_tracker_tab_symbol(t_port, h_sym)
+
     return jsonify({"ok": True, "message": f"Holding {holding_id} deleted."})
 
 
@@ -805,6 +913,11 @@ def api_portfolio_tracker_delete_lot(lot_id: int):
     from ..db.backup import create_backup
     from ..db.repositories import holdings as hold_repo
 
+    lot = hold_repo.get_lot(lot_id)
+    holding = hold_repo.get_holding(lot["holding_id"]) if lot else None
+    t_port = _get_tracker_port(holding["portfolio_name"], holding.get("person")) if holding else None
+    h_sym = holding["symbol"] if holding else None
+
     deleted = hold_repo.delete_lot(lot_id)
     if not deleted:
         return jsonify({"ok": False, "error": f"Lot {lot_id} not found."}), 404
@@ -813,6 +926,9 @@ def api_portfolio_tracker_delete_lot(lot_id: int):
         create_backup()
     except Exception:
         pass
+
+    if t_port and h_sym:
+        _sync_tracker_tab_symbol(t_port, h_sym)
 
     return jsonify({"ok": True, "message": f"Lot {lot_id} deleted."})
 
@@ -872,6 +988,13 @@ def api_portfolio_tracker_update_lot(lot_id: int):
     )
     if not updated:
         return jsonify({"ok": False, "error": f"Lot {lot_id} not found."}), 404
+
+    lot = hold_repo.get_lot(lot_id)
+    holding = hold_repo.get_holding(lot["holding_id"]) if lot else None
+    t_port = _get_tracker_port(holding["portfolio_name"], holding.get("person")) if holding else None
+    h_sym = holding["symbol"] if holding else None
+    if t_port and h_sym:
+        _sync_tracker_tab_symbol(t_port, h_sym)
 
     try:
         create_backup()
@@ -1047,6 +1170,10 @@ def api_portfolio_tracker_sell():
     from ..db.backup import create_backup
     from ..db.repositories import holdings as hold_repo
 
+    holding = hold_repo.get_holding(holding_id)
+    t_port = _get_tracker_port(holding["portfolio_name"], holding.get("person")) if holding else None
+    h_sym = holding["symbol"] if holding else None
+
     try:
         sale_id = hold_repo.sell_holding(
             holding_id=holding_id,
@@ -1061,6 +1188,9 @@ def api_portfolio_tracker_sell():
             create_backup()
         except Exception:
             pass
+
+        if t_port and h_sym:
+            _sync_tracker_tab_symbol(t_port, h_sym)
 
         return jsonify({"ok": True, "sale_id": sale_id, "message": "Holding sold successfully."})
     except Exception as exc:

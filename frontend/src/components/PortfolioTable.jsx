@@ -9,7 +9,18 @@ export default function PortfolioTable({
   onRemoveTicker,
   disabled = false,
 }) {
-  if (!rows || rows.length === 0) {
+  const sortedRows = React.useMemo(() => {
+    if (!rows || rows.length === 0) return [];
+    return [...rows].sort((a, b) => {
+      const aErr = Boolean(a.error || a.price === null || a.price === undefined);
+      const bErr = Boolean(b.error || b.price === null || b.price === undefined);
+      if (aErr && !bErr) return 1;
+      if (!aErr && bErr) return -1;
+      return 0; // preserve server-side EMA order for normal rows
+    });
+  }, [rows]);
+
+  if (!sortedRows || sortedRows.length === 0) {
     return (
       <div className="p-4 text-center text-muted">
         No tickers in <strong>{portfolioName}</strong> yet — add one using the form above.
@@ -23,6 +34,7 @@ export default function PortfolioTable({
         <thead>
           <tr>
             <th className="col-sticky-ticker" style={{ width: '220px' }}>Ticker</th>
+            <th style={{ width: '120px' }}>Avg Price</th>
             <th style={{ width: '130px' }}>Current Price</th>
             <th style={{ width: '90px' }}>Signal</th>
             {periods.map((period) => (
@@ -36,7 +48,7 @@ export default function PortfolioTable({
           </tr>
         </thead>
         <tbody>
-          {rows.map((row) => {
+          {sortedRows.map((row) => {
             const isError = Boolean(row.error);
 
             return (
@@ -72,6 +84,18 @@ export default function PortfolioTable({
                       </div>
                     )}
                   </div>
+                </td>
+
+                {/* Avg Price */}
+                <td>
+                  <span className="col-price-val">
+                    {row.avg_price !== null && row.avg_price !== undefined
+                      ? `₹${Number(row.avg_price).toLocaleString('en-IN', {
+                          minimumFractionDigits: 2,
+                          maximumFractionDigits: 2,
+                        })}`
+                      : '—'}
+                  </span>
                 </td>
 
                 {/* Data or Error */}
@@ -118,15 +142,27 @@ export default function PortfolioTable({
 
                 {/* Actions (Delete) */}
                 <td style={{ textAlign: 'center' }}>
-                  <button
-                    type="button"
-                    className="action-del-btn"
-                    title={`Remove ${row.symbol} from ${portfolioName}`}
-                    disabled={disabled}
-                    onClick={() => onRemoveTicker(portfolioName, row.symbol)}
-                  >
-                    <Trash2 size={15} />
-                  </button>
+                  {row.is_sourced ? (
+                    <button
+                      type="button"
+                      className="action-del-btn opacity-30"
+                      title="Managed by Portfolio Tracker — mark as sold in Portfolio Tracker to remove"
+                      disabled={true}
+                      style={{ cursor: 'not-allowed' }}
+                    >
+                      <Trash2 size={15} />
+                    </button>
+                  ) : (
+                    <button
+                      type="button"
+                      className="action-del-btn"
+                      title={`Remove ${row.symbol} from ${portfolioName}`}
+                      disabled={disabled}
+                      onClick={() => onRemoveTicker(portfolioName, row.symbol)}
+                    >
+                      <Trash2 size={15} />
+                    </button>
+                  )}
                 </td>
               </tr>
             );

@@ -30,18 +30,168 @@ def ensure_portfolio(name: str, kind: str = "personal") -> None:
     )
 
 
-def load_portfolios(names: tuple[str, ...] = ("BAPA", "MADI")) -> dict[str, list[str]]:
-    """Return portfolios as ``{name: [symbol, ...]}``, matching the old JSON shape."""
+def load_tracker_portfolios_meta(
+    names: tuple[str, ...] = ("BAPA", "MADI"),
+) -> dict[str, dict[str, dict[str, Any]]]:
+    """Return enriched portfolio ticker metadata for Tracker tab tables.
+
+    Returns ``{portfolio_name: {symbol: {
+        'symbol': symbol,
+        'stock_name': str,
+        'avg_price': float | None,
+        'is_sourced': bool,
+        'is_manual': bool,
+        'total_qty': float
+    }}}``.
+
+    For MADI:
+      Sourced from:
+        - Portfolio Tracker 'MADI' open holdings (status = 'open')
+        - Portfolio Tracker 'LOAN' open holdings where person is 'MADI'
+      Plus manual tickers in ``portfolio_ticker`` for 'MADI'.
+
+    For BAPA:
+      Sourced from:
+        - Portfolio Tracker 'BAPA' open holdings (status = 'open')
+        - Portfolio Tracker 'LOAN' open holdings where person is 'BAPA'
+      Plus manual tickers in ``portfolio_ticker`` for 'BAPA'.
+
+    If the same ticker exists in both personal and loan, computes the combined
+    weighted average purchase price across all open lots.
+    """
+    from ...portfolio import normalize_symbol
+
     conn = get_connection()
-    result: dict[str, list[str]] = {}
+    result: dict[str, dict[str, dict[str, Any]]] = {}
+
     for name in names:
         ensure_portfolio(name)
-        rows = conn.execute(
+        port_key = name.strip().upper()
+
+        # 1. Fetch open holdings from Portfolio Tracker for this portfolio:
+        #    - h.portfolio_name == port_key
+        #    - OR (h.portfolio_name == 'LOAN' AND h.person == port_key)
+        holding_query = """
+            SELECT
+                h.id,
+                h.portfolio_name,
+                h.symbol,
+                COALESCE(h.stock_name, h.scheme_name, '') AS stock_name,
+                h.person,
+                COALESCE(SUM(b.quantity), 0.0) AS total_qty,
+                COALESCE(SUM(COALESCE(b.invested_amount, b.quantity * b.avg_price)), 0.0) AS total_invested
+            FROM holding h
+            LEFT JOIN buy_lot b ON b.holding_id = h.id
+            WHERE h.status = 'open'
+              AND (
+                  h.portfolio_name = ?
+                  OR (h.portfolio_name = 'LOAN' AND UPPER(TRIM(COALESCE(h.person, ''))) = ?)
+              )
+            GROUP BY h.id
+        """
+        holding_rows = conn.execute(holding_query, (port_key, port_key)).fetchall()
+
+        aggregated: dict[str, dict[str, Any]] = {}
+        for row in holding_rows:
+            raw_sym = (row["symbol"] or "").strip()
+            if not raw_sym:
+                continue
+            try:
+                norm_sym = normalize_symbol(raw_sym)
+            except Exception:
+                norm_sym = raw_sym.upper()
+
+            qty = float(row["total_qty"] or 0.0)
+            invested = float(row["total_invested"] or 0.0)
+            stock_name = (row["stock_name"] or "").strip()
+
+            if norm_sym not in aggregated:
+                aggregated[norm_sym] = {
+                    "symbol": norm_sym,
+                    "stock_name": stock_name,
+                    "total_qty": qty,
+                    "total_invested": invested,
+                }
+            else:
+                aggregated[norm_sym]["total_qty"] += qty
+                aggregated[norm_sym]["total_invested"] += invested
+                if not aggregated[norm_sym]["stock_name"] and stock_name:
+                    aggregated[norm_sym]["stock_name"] = stock_name
+
+        # Calculate weighted average and mark as sourced
+        meta_by_symbol: dict[str, dict[str, Any]] = {}
+        for norm_sym, data in aggregated.items():
+            t_qty = data["total_qty"]
+            t_inv = data["total_invested"]
+            # Only include if open quantity > 0 (position is not sold out)
+            if t_qty <= 0:
+                continue
+            avg_p = round(t_inv / t_qty, 2) if t_qty > 0 else 0.0
+            meta_by_symbol[norm_sym] = {
+                "symbol": norm_sym,
+                "stock_name": data["stock_name"],
+                "avg_price": avg_p,
+                "is_sourced": True,
+                "is_manual": False,
+                "total_qty": t_qty,
+            }
+
+        # 2. Fetch manual additions from portfolio_ticker
+        manual_rows = conn.execute(
             "SELECT symbol FROM portfolio_ticker WHERE portfolio_name = ? ORDER BY added_at",
             (name,),
         ).fetchall()
-        result[name] = [row["symbol"] for row in rows]
+
+        for m_row in manual_rows:
+            raw_sym = (m_row["symbol"] or "").strip()
+            if not raw_sym:
+                continue
+            try:
+                norm_sym = normalize_symbol(raw_sym)
+            except Exception:
+                norm_sym = raw_sym.upper()
+
+            if norm_sym in meta_by_symbol:
+                # Exists in both Portfolio Tracker and manual table
+                meta_by_symbol[norm_sym]["is_manual"] = True
+            else:
+                # Purely manual ticker
+                meta_by_symbol[norm_sym] = {
+                    "symbol": norm_sym,
+                    "stock_name": "",
+                    "avg_price": None,
+                    "is_sourced": False,
+                    "is_manual": True,
+                    "total_qty": 0.0,
+                }
+
+        result[name] = meta_by_symbol
+
     return result
+
+
+def get_all_portfolio_tracker_symbols() -> list[str]:
+    """Return all unique symbols currently held in open holdings across all portfolios (MADI, BAPA, LOAN)."""
+    from ...portfolio import normalize_symbol
+
+    conn = get_connection()
+    rows = conn.execute("SELECT DISTINCT symbol FROM holding WHERE status = 'open'").fetchall()
+    symbols = set()
+    for row in rows:
+        raw_sym = (row["symbol"] or "").strip()
+        if not raw_sym:
+            continue
+        try:
+            symbols.add(normalize_symbol(raw_sym))
+        except Exception:
+            symbols.add(raw_sym.upper())
+    return sorted(symbols)
+
+
+def load_portfolios(names: tuple[str, ...] = ("BAPA", "MADI")) -> dict[str, list[str]]:
+    """Return portfolios as ``{name: [symbol, ...]}``, including sourced tickers from Portfolio Tracker."""
+    meta = load_tracker_portfolios_meta(names)
+    return {name: list(symbols.keys()) for name, symbols in meta.items()}
 
 
 def save_portfolios(portfolios: dict[str, list[str]]) -> None:

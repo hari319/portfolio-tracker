@@ -104,6 +104,18 @@ def save_portfolios(portfolios: dict[str, list[str]]) -> None:
     _repo.save_portfolios(portfolios)
 
 
+def load_tracker_portfolios_meta(
+    names: tuple[str, ...] = PORTFOLIO_NAMES,
+) -> dict[str, dict[str, dict[str, Any]]]:
+    """Return enriched ticker metadata for Tracker tab tables."""
+    return _repo.load_tracker_portfolios_meta(names)
+
+
+def get_all_portfolio_tracker_symbols() -> list[str]:
+    """Return all unique symbols currently held in open holdings across all portfolios."""
+    return _repo.get_all_portfolio_tracker_symbols()
+
+
 def add_ticker(portfolio_name: str, raw_symbol: str) -> str:
     """Validate and append a ticker. Raises :class:`ValidationError` on duplicates."""
     portfolio = validate_portfolio(portfolio_name)
@@ -121,12 +133,22 @@ def remove_ticker(portfolio_name: str, raw_symbol: str) -> str:
     portfolio = validate_portfolio(portfolio_name)
     symbol = normalize_symbol(raw_symbol)
 
-    if not _repo.ticker_exists(portfolio, symbol):
+    meta_dict = _repo.load_tracker_portfolios_meta((portfolio,)).get(portfolio, {})
+    meta = meta_dict.get(symbol)
+
+    if not meta:
         raise ValidationError(f"{symbol} is not in the {portfolio} portfolio.")
 
-    _repo.remove_ticker(portfolio, symbol)
-    _repo.forget_pending_addition(portfolio, symbol)
-    logger.info("Removed %s from %s", symbol, portfolio)
+    if meta.get("is_sourced") and not meta.get("is_manual"):
+        raise ValidationError(
+            f"{symbol} is managed by Portfolio Tracker. To remove it, mark it as sold or delete it in Portfolio Tracker."
+        )
+
+    if _repo.ticker_exists(portfolio, symbol):
+        _repo.remove_ticker(portfolio, symbol)
+        _repo.forget_pending_addition(portfolio, symbol)
+        logger.info("Removed %s from %s", symbol, portfolio)
+
     return symbol
 
 

@@ -16,6 +16,7 @@
             <thead>
                 <tr>
                     <th class="col-ticker">Ticker</th>
+                    <th class="col-price">Avg Price</th>
                     <th class="col-price">Current Price</th>
                     <th class="col-signal">Signal</th>
                     {% for period in periods %}
@@ -27,7 +28,7 @@
             <tbody>
                 {% if not bucket.rows %}
                 <tr>
-                    <td class="empty" colspan="{{ periods | length + 4 }}">
+                    <td class="empty" colspan="{{ periods | length + 5 }}">
                         No tickers in {{ name }} yet — add one using the form above.
                     </td>
                 </tr>
@@ -43,6 +44,14 @@
                         {% endif %}
                         {% if row.notes %}
                         <span class="note-flag" title="{{ row.notes | join(' • ') }}">!</span>
+                        {% endif %}
+                    </td>
+
+                    <td class="col-price">
+                        {% if row.avg_price is not none %}
+                        ₹{{ "%.2f"|format(row.avg_price) }}
+                        {% else %}
+                        —
                         {% endif %}
                     </td>
 
@@ -81,9 +90,15 @@
                     {% endif %}
 
                     <td class="col-actions">
+                        {% if row.is_sourced %}
+                        <button type="button" class="icon-btn remove-btn" disabled
+                            title="Managed by Portfolio Tracker — mark as sold in Portfolio Tracker to remove"
+                            style="opacity: 0.3; cursor: not-allowed;">&times;</button>
+                        {% else %}
                         <button type="button" class="icon-btn remove-btn" data-portfolio="{{ name }}"
                             data-symbol="{{ row.symbol }}"
                             title="Remove {{ row.symbol }} from {{ name }}">&times;</button>
+                        {% endif %}
                     </td>
                 </tr>
                 {% endfor %}

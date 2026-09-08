@@ -7,6 +7,7 @@ The **Tracker** tab is the primary dashboard for monitoring multiple stock portf
 ## 1. Core Architecture & Philosophy
 
 * **Live Monitoring**: Shows live market prices and evaluates whether current prices are holding above or falling below critical trend baselines.
+* **Avg Price (₹)**: Directly linked to **Portfolio Tracker**; displays the weighted average purchase price for the holding across open lots (combining Personal and Loan entries). Displays `—` for purely manual tickers.
 * **Dual Timeframe (Daily & Weekly)**: For every stock, the system tracks 5 key EMA periods on both Daily and Weekly intervals (10 EMAs total):
   * **9 EMA**: Short-term momentum
   * **21 EMA**: Short-term trend baseline
@@ -51,18 +52,26 @@ Each EMA column renders a stacked cell:
 
 ---
 
-## 4. Ticker Management
+## 4. Ticker Management & Portfolio Tracker Linking
 
-### Adding a Ticker
+### Ticker Sourcing from Portfolio Tracker
+* **MADI Table**: Automatically populated with open holdings from Portfolio Tracker's **MADI** table PLUS Portfolio Tracker's **LOAN** table where `person = 'MADI'`.
+* **BAPA Table**: Automatically populated with open holdings from Portfolio Tracker's **BAPA** table PLUS Portfolio Tracker's **LOAN** table where `person = 'BAPA'`.
+* **Deduplication & Weighted Avg Price**: If a ticker exists in both Personal and Loan tables for that person, it is automatically merged into a single row with combined weighted average purchase price.
+* **Sold Lifecycle**: When an open holding is marked as sold in Portfolio Tracker (or deleted), it is automatically removed from the Tracker tab once the position reaches zero. Partially sold holdings remain in the Tracker tab with updated lot quantities and Avg Price.
+* **Protected Deletion**: Sourced tickers cannot be deleted via the Tracker tab's trash button (trash button is disabled with an explanatory tooltip).
+
+### Adding a Manual Ticker
 1. Use the **Add ticker** form located below the portfolio tables.
 2. Select the target portfolio (**BAPA** or **MADI**).
 3. Enter the ticker symbol:
    * Bare symbol defaults to NSE (e.g., `TCS` → `TCS.NS`).
    * Explicit suffix supported: `500325.BO` or `INFY.NS`.
-4. Click **Add ticker**. The system immediately validates the symbol via Yahoo Finance, computes its full EMA set, persists it to `stockmon.db` (in the `portfolio_ticker` table with immediate transactional safety), logs the addition with a timestamp to the pending queue, and updates the UI in real time via Server-Sent Events (SSE).
+4. Click **Add & fetch**. The system immediately validates the symbol via Yahoo Finance, computes its full EMA set, persists it to `stockmon.db` (in `portfolio_ticker`), and updates the UI in real time via Server-Sent Events (SSE). Purely manual tickers retain an active trash button for removal.
 
-### Removing a Ticker
-* Click the **✕** button on any row in the portfolio table. The symbol is removed from `stockmon.db` and the UI updates instantly.
+### Shared Single Price Fetch (LTP)
+* Live prices (LTP) fetched for the Tracker tab (during scheduled or manual runs) are automatically saved to `quote_cache` in `stockmon.db`.
+* The Portfolio Tracker tab (`/api/portfolio-tracker/<portfolio>`) reads this exact same cached quote for Loan, Madi, and Bapa tables, eliminating duplicate external network calls.
 
 ---
 
