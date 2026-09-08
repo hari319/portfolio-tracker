@@ -219,6 +219,18 @@ export async function deletePortfolioLot(lotId) {
   return request(`/api/portfolio-tracker/lot/${lotId}`, { method: 'DELETE' });
 }
 
+export async function updatePortfolioLot(lotId, data) {
+  return sendJson(`/api/portfolio-tracker/lot/${lotId}`, 'PUT', data);
+}
+
+export async function updatePortfolioHolding(holdingId, data) {
+  return sendJson(`/api/portfolio-tracker/holding/${holdingId}`, 'PUT', data);
+}
+
+export async function updatePortfolioSold(holdingId, data) {
+  return sendJson(`/api/portfolio-tracker/sold/${holdingId}`, 'PUT', data);
+}
+
 export async function sellPortfolioHolding(data) {
   return sendJson('/api/portfolio-tracker/sell', 'POST', data);
 }

@@ -174,6 +174,7 @@ def enrich_holding_row(
 
     return {
         **holding,
+        "stock_name": holding.get("stock_name") or holding.get("scheme_name") or "",
         "current_date": today_iso,
         "years": years,
         "months": months,
@@ -224,6 +225,7 @@ def enrich_sold_row(sold_item: dict[str, Any]) -> dict[str, Any]:
 
     return {
         **sold_item,
+        "stock_name": sold_item.get("stock_name") or sold_item.get("scheme_name") or "",
         "current_date": sell_date,
         "years": years,
         "months": months,
@@ -247,7 +249,10 @@ def compute_totals(rows: list[dict[str, Any]]) -> dict[str, float]:
     total_current = sum(r.get("current_total", 0.0) for r in rows)
     total_earned = sum(r.get("earned", 0.0) for r in rows)
     total_loss = sum(r.get("loss", 0.0) for r in rows)
-    net_profit = total_current - total_invested
+    # Net Profit / Realized Profit = Earned total - Loss total.
+    # Note: loss is stored as a negative float (e.g. -1500.0),
+    # so total_earned + total_loss equals total_earned - abs(total_loss).
+    net_profit = total_earned + total_loss if total_loss <= 0 else total_earned - total_loss
 
     return {
         "invested_amount": round(total_invested, 2),
@@ -279,8 +284,8 @@ def compute_summary_panel(
     loan_amount = summary_values.get("loan_amount", 0.0)
     # Loan money not yet deployed; negative once deployment exceeds the loan.
     remaining_invest_loan = loan_amount - total_block_a
-    # In Excel, Stock Profit = Earned + Loss (since loss is negative)
-    stock_profit = loan_earned + loan_loss
+    # Stock Profit = Earned + Loss of sold positions (since loss is negative)
+    stock_profit = loan_earned + loan_loss if loan_loss <= 0 else loan_earned - loan_loss
     dividend_total = loan_dividends
     mf_redeem_profit = summary_values.get("current_mf_redeem_profit", 0.0)
 
@@ -302,6 +307,8 @@ def compute_summary_panel(
             "loan_amount": round(loan_amount, 2),
             "remaining_invest_loan": round(remaining_invest_loan, 2),
             "stock_profit": round(stock_profit, 2),
+            "sold_earned": round(loan_earned, 2),
+            "sold_loss": round(loan_loss, 2),
             "dividend": round(dividend_total, 2),
             "current_mf_redeem_profit": round(mf_redeem_profit, 2),
             "current_remaining": round(current_remaining, 2),

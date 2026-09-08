@@ -37,6 +37,7 @@ from .sheet_format import (
     FALLBACK_LAYOUT,
     HOLDING_COLUMNS,
     HOLDINGS_HEADER_LABEL,
+    HOLDINGS_HEADER_LABELS,
     SHEET_NAMES,
     SOLD_SECTION_LABELS,
     SOLD_START_COLUMN,
@@ -121,7 +122,13 @@ def _resolve_layout(ws: Any, portfolio: str) -> dict[str, int]:
     fallback = FALLBACK_LAYOUT[portfolio]
     sold_col = SOLD_START_COLUMN[portfolio]
 
-    header_row = _find_label_row(ws, 1, (HOLDINGS_HEADER_LABEL,), 1, _MARKER_SEARCH_LIMIT)
+    if sold_col != 1:
+        if _find_label_row(ws, 21, HOLDINGS_HEADER_LABELS, 1, _MARKER_SEARCH_LIMIT):
+            sold_col = 21
+        elif _find_label_row(ws, 20, HOLDINGS_HEADER_LABELS, 1, _MARKER_SEARCH_LIMIT):
+            sold_col = 20
+
+    header_row = _find_label_row(ws, 1, HOLDINGS_HEADER_LABELS, 1, _MARKER_SEARCH_LIMIT)
     holdings_start = header_row + 1 if header_row else fallback["holdings_start"]
 
     if sold_col == 1:
@@ -129,12 +136,12 @@ def _resolve_layout(ws: Any, portfolio: str) -> dict[str, int]:
         marker = _find_label_row(ws, 1, SOLD_SECTION_LABELS, holdings_start)
         if marker:
             sold_start = marker + 1
-            if _label_at(ws, sold_start, 1) == HOLDINGS_HEADER_LABEL:
+            if _label_at(ws, sold_start, 1) in HOLDINGS_HEADER_LABELS:
                 sold_start += 1
         else:
             sold_start = fallback["sold_start"]
     else:
-        sold_header = _find_label_row(ws, sold_col, (HOLDINGS_HEADER_LABEL,), 1, _MARKER_SEARCH_LIMIT)
+        sold_header = _find_label_row(ws, sold_col, HOLDINGS_HEADER_LABELS, 1, _MARKER_SEARCH_LIMIT)
         sold_start = sold_header + 1 if sold_header else fallback["sold_start"]
 
     div_marker = _find_label_row(ws, 1, (DIVIDEND_SECTION_LABEL,), holdings_start)
@@ -251,6 +258,17 @@ def import_workbook(file_path_or_bytes: str | Path | io.BytesIO, replace: bool =
             # Aggregation buffer for multi-buy rows: symbol -> {holding_meta, lots}
             open_holdings_buffer: dict[str, dict[str, Any]] = {}
 
+            hdr_row = layout["holdings_start"] - 1
+            col_2_hdr = normalize_label(ws.cell(hdr_row, 2).value) if hdr_row >= 1 else ""
+            has_stock_name = col_2_hdr in ("stockname", "stock name", "name")
+            inv_col = 3 if has_stock_name else 2
+            q_col = 7 if has_stock_name else 6
+            avg_col = 8 if has_stock_name else 7
+            inv_col_val = 10 if has_stock_name else 9
+            bc_col = 11 if has_stock_name else 10
+            app_col = 18 if has_stock_name else 17
+            rem_col = 19 if has_stock_name else 18
+
             for r in range(layout["holdings_start"], ws.max_row + 1):
                 col_a = ws.cell(r, 1).value
                 if normalize_label(col_a) == TOTAL_ROW_LABEL:
@@ -258,27 +276,28 @@ def import_workbook(file_path_or_bytes: str | Path | io.BytesIO, replace: bool =
                 if not col_a or not str(col_a).strip():
                     continue
 
-                scheme = str(col_a).strip()
+                ticker = str(col_a).strip()
+                stock_name = str(ws.cell(r, 2).value or "").strip() if has_stock_name else ticker
 
-                inv_date = parse_sheet_date(ws.cell(r, 2).value)
-                q, flag_q = _safe_number(ws.cell(r, 6).value)
-                avg, flag_avg = _safe_number(ws.cell(r, 7).value)
-                inv_val, _ = _safe_number(ws.cell(r, 9).value)
-                buy_charge, _ = _safe_number(ws.cell(r, 10).value)
-                app = str(ws.cell(r, 17).value or "").strip()
-                remarks = str(ws.cell(r, 18).value or "").strip()
+                inv_date = parse_sheet_date(ws.cell(r, inv_col).value)
+                q, flag_q = _safe_number(ws.cell(r, q_col).value)
+                avg, flag_avg = _safe_number(ws.cell(r, avg_col).value)
+                inv_val, _ = _safe_number(ws.cell(r, inv_col_val).value)
+                buy_charge, _ = _safe_number(ws.cell(r, bc_col).value)
+                app = str(ws.cell(r, app_col).value or "").strip()
+                remarks = str(ws.cell(r, rem_col).value or "").strip()
 
                 if flag_q or flag_avg:
                     report["flagged_items"].append({
                         "portfolio": norm_port,
                         "section": "open_holding",
                         "row": r,
-                        "scheme": scheme,
-                        "note": f"Unusual quantity or avg price in Excel: Q={ws.cell(r,6).value!r}, Avg={ws.cell(r,7).value!r}",
+                        "scheme": ticker,
+                        "note": f"Unusual quantity or avg price in Excel: Q={ws.cell(r, q_col).value!r}, Avg={ws.cell(r, avg_col).value!r}",
                     })
 
                 # Check manual Invested override (e.g. demerger with cost basis 0)
-                formula_inv = ws_f.cell(r, 9).value if ws_f else None
+                formula_inv = ws_f.cell(r, inv_col_val).value if ws_f else None
                 inv_is_formula = str(formula_inv or "").strip().startswith("=")
                 expected_inv = q * avg
                 if not inv_is_formula and abs(inv_val - expected_inv) > 0.01:
@@ -287,14 +306,14 @@ def import_workbook(file_path_or_bytes: str | Path | io.BytesIO, replace: bool =
                         "portfolio": norm_port,
                         "section": "open_holding",
                         "row": r,
-                        "scheme": scheme,
+                        "scheme": ticker,
                         "note": f"Manual Invested override preserved: {inv_val} (expected {expected_inv})",
                     })
                 else:
                     actual_inv = None
 
                 # Distinguish manual buy charge override vs derived value (§1.4)
-                formula_val = ws_f.cell(r, 10).value if ws_f else None
+                formula_val = ws_f.cell(r, bc_col).value if ws_f else None
                 is_formula = str(formula_val or "").strip().startswith("=")
                 expected_base = actual_inv if actual_inv is not None else expected_inv
                 if _is_manual_charge(buy_charge, is_formula, compute_buy_charge(expected_base)):
@@ -303,7 +322,7 @@ def import_workbook(file_path_or_bytes: str | Path | io.BytesIO, replace: bool =
                         "portfolio": norm_port,
                         "section": "open_holding",
                         "row": r,
-                        "scheme": scheme,
+                        "scheme": ticker,
                         "note": f"Manual Buy Charge override preserved: {buy_charge}",
                     })
                 else:
@@ -322,32 +341,34 @@ def import_workbook(file_path_or_bytes: str | Path | io.BytesIO, replace: bool =
                     "app": app,
                 }
 
-                if scheme not in open_holdings_buffer:
-                    open_holdings_buffer[scheme] = {
+                if ticker not in open_holdings_buffer:
+                    open_holdings_buffer[ticker] = {
                         "portfolio_name": norm_port,
-                        "symbol": scheme,
-                        "scheme_name": scheme,
+                        "symbol": ticker,
+                        "scheme_name": stock_name or ticker,
+                        "stock_name": stock_name or ticker,
                         "person": person,
                         "app": app,
                         "remarks": remarks,
                         "lots": [lot_data],
                     }
                 else:
-                    open_holdings_buffer[scheme]["lots"].append(lot_data)
+                    open_holdings_buffer[ticker]["lots"].append(lot_data)
 
             # Insert open holdings into database
-            for scheme, h_data in open_holdings_buffer.items():
+            for ticker, h_data in open_holdings_buffer.items():
                 cur = conn.execute(
                     """
                     INSERT INTO holding (
-                        portfolio_name, symbol, scheme_name, name_confirmed,
+                        portfolio_name, symbol, scheme_name, stock_name, name_confirmed,
                         person, app, remarks, status, created_at, updated_at
-                    ) VALUES (?, ?, ?, 1, ?, ?, ?, 'open', ?, ?)
+                    ) VALUES (?, ?, ?, ?, 1, ?, ?, ?, 'open', ?, ?)
                     """,
                     (
                         h_data["portfolio_name"],
                         h_data["symbol"],
                         h_data["scheme_name"],
+                        h_data["stock_name"],
                         h_data["person"],
                         h_data["app"],
                         h_data["remarks"],
@@ -384,6 +405,21 @@ def import_workbook(file_path_or_bytes: str | Path | io.BytesIO, replace: bool =
             # 2. Parse Sold Rows
             # ---------------------------------------------------------------
             sold_col = layout["sold_col"]
+            sold_hdr_row = layout["sold_start"] - 1
+            sold_col_2_hdr = normalize_label(ws.cell(sold_hdr_row, sold_col + 1).value) if sold_hdr_row >= 1 else ""
+            sold_has_stock_name = sold_col_2_hdr in ("stockname", "stock name", "name") or (sold_col == 1 and has_stock_name)
+
+            s_inv_col = sold_col + 2 if sold_has_stock_name else sold_col + 1
+            s_sell_col = sold_col + 3 if sold_has_stock_name else sold_col + 2
+            s_q_col = sold_col + 6 if sold_has_stock_name else sold_col + 5
+            s_avg_col = sold_col + 7 if sold_has_stock_name else sold_col + 6
+            s_sp_col = sold_col + 8 if sold_has_stock_name else sold_col + 7
+            s_inv_val_col = sold_col + 9 if sold_has_stock_name else sold_col + 8
+            s_bc_col = sold_col + 10 if sold_has_stock_name else sold_col + 9
+            s_sc_col = sold_col + 11 if sold_has_stock_name else sold_col + 10
+            s_loss_col = sold_col + 14 if sold_has_stock_name else sold_col + 13
+            s_app_col = sold_col + 17 if sold_has_stock_name else sold_col + 16
+            s_rem_col = sold_col + 18 if sold_has_stock_name else sold_col + 17
 
             for r in range(layout["sold_start"], ws.max_row + 1):
                 col_val = ws.cell(r, sold_col).value
@@ -398,18 +434,20 @@ def import_workbook(file_path_or_bytes: str | Path | io.BytesIO, replace: bool =
                 if not col_val or not str(col_val).strip():
                     continue
 
-                scheme = str(col_val).strip()
-                inv_date = parse_sheet_date(ws.cell(r, sold_col + 1).value)
-                sell_date = parse_sheet_date(ws.cell(r, sold_col + 2).value)
-                q, flag_q = _safe_number(ws.cell(r, sold_col + 5).value)
-                avg, flag_avg = _safe_number(ws.cell(r, sold_col + 6).value)
-                sell_price, flag_sp = _safe_number(ws.cell(r, sold_col + 7).value)
-                inv_val, _ = _safe_number(ws.cell(r, sold_col + 8).value)
-                buy_charge, _ = _safe_number(ws.cell(r, sold_col + 9).value)
-                sell_charge, _ = _safe_number(ws.cell(r, sold_col + 10).value)
-                loss_val, _ = _safe_number(ws.cell(r, sold_col + 13).value)
-                app = str(ws.cell(r, sold_col + 16).value or "").strip()
-                remarks = str(ws.cell(r, sold_col + 17).value or "").strip()
+                ticker = str(col_val).strip()
+                stock_name = str(ws.cell(r, sold_col + 1).value or "").strip() if sold_has_stock_name else ticker
+
+                inv_date = parse_sheet_date(ws.cell(r, s_inv_col).value)
+                sell_date = parse_sheet_date(ws.cell(r, s_sell_col).value)
+                q, flag_q = _safe_number(ws.cell(r, s_q_col).value)
+                avg, flag_avg = _safe_number(ws.cell(r, s_avg_col).value)
+                sell_price, flag_sp = _safe_number(ws.cell(r, s_sp_col).value)
+                inv_val, _ = _safe_number(ws.cell(r, s_inv_val_col).value)
+                buy_charge, _ = _safe_number(ws.cell(r, s_bc_col).value)
+                sell_charge, _ = _safe_number(ws.cell(r, s_sc_col).value)
+                loss_val, _ = _safe_number(ws.cell(r, s_loss_col).value)
+                app = str(ws.cell(r, s_app_col).value or "").strip()
+                remarks = str(ws.cell(r, s_rem_col).value or "").strip()
 
                 # Handle special advisory fee rows (e.g. Equity Premium, Mahveer Wealth with '-' as Q/Avg and -6999 as loss)
                 if (flag_q or q == 0.0) and loss_val != 0.0:
@@ -421,8 +459,8 @@ def import_workbook(file_path_or_bytes: str | Path | io.BytesIO, replace: bool =
                         "portfolio": norm_port,
                         "section": "sold",
                         "row": r,
-                        "scheme": scheme,
-                        "note": f"Manual deduction/fee entry imported with loss {loss_val}: '{remarks or scheme}'",
+                        "scheme": ticker,
+                        "note": f"Manual deduction/fee entry imported with loss {loss_val}: '{remarks or ticker}'",
                     })
                 elif flag_q or flag_avg or flag_sp:
                     actual_inv = None
@@ -430,12 +468,12 @@ def import_workbook(file_path_or_bytes: str | Path | io.BytesIO, replace: bool =
                         "portfolio": norm_port,
                         "section": "sold",
                         "row": r,
-                        "scheme": scheme,
-                        "note": f"Unusual value: Q={ws.cell(r,sold_col+5).value!r}, Avg={ws.cell(r,sold_col+6).value!r}, SellPrice={ws.cell(r,sold_col+7).value!r}",
+                        "scheme": ticker,
+                        "note": f"Unusual value: Q={ws.cell(r, s_q_col).value!r}, Avg={ws.cell(r, s_avg_col).value!r}, SellPrice={ws.cell(r, s_sp_col).value!r}",
                     })
                 else:
                     # Check manual Invested override (e.g. demergers VEDPOWER, VOGL, VISL or partial lots)
-                    formula_inv = ws_f.cell(r, sold_col + 8).value if ws_f else None
+                    formula_inv = ws_f.cell(r, s_inv_val_col).value if ws_f else None
                     inv_is_formula = str(formula_inv or "").strip().startswith("=")
                     expected_inv = q * avg
                     if not inv_is_formula and abs(inv_val - expected_inv) > 0.01:
@@ -444,7 +482,7 @@ def import_workbook(file_path_or_bytes: str | Path | io.BytesIO, replace: bool =
                             "portfolio": norm_port,
                             "section": "sold",
                             "row": r,
-                            "scheme": scheme,
+                            "scheme": ticker,
                             "note": f"Manual Invested override preserved: {inv_val} (expected {expected_inv})",
                         })
                     else:
@@ -453,8 +491,8 @@ def import_workbook(file_path_or_bytes: str | Path | io.BytesIO, replace: bool =
                 person = map_app_to_person(app) if norm_port == "LOAN" else None
 
                 # Distinguish manual overrides vs derived values (§1.4)
-                formula_bc = ws_f.cell(r, sold_col + 9).value if ws_f else None
-                formula_sc = ws_f.cell(r, sold_col + 10).value if ws_f else None
+                formula_bc = ws_f.cell(r, s_bc_col).value if ws_f else None
+                formula_sc = ws_f.cell(r, s_sc_col).value if ws_f else None
                 bc_is_formula = str(formula_bc or "").strip().startswith("=")
                 sc_is_formula = str(formula_sc or "").strip().startswith("=")
                 expected_base = actual_inv if actual_inv is not None else (q * avg)
@@ -474,7 +512,7 @@ def import_workbook(file_path_or_bytes: str | Path | io.BytesIO, replace: bool =
                         "portfolio": norm_port,
                         "section": "sold",
                         "row": r,
-                        "scheme": scheme,
+                        "scheme": ticker,
                         "note": f"Manual Buy Charge override preserved: {buy_charge}",
                     })
                 if actual_sc is not None:
@@ -482,7 +520,7 @@ def import_workbook(file_path_or_bytes: str | Path | io.BytesIO, replace: bool =
                         "portfolio": norm_port,
                         "section": "sold",
                         "row": r,
-                        "scheme": scheme,
+                        "scheme": ticker,
                         "note": f"Manual Sell Charge override preserved: {sell_charge}",
                     })
 
@@ -490,11 +528,11 @@ def import_workbook(file_path_or_bytes: str | Path | io.BytesIO, replace: bool =
                 h_cur = conn.execute(
                     """
                     INSERT INTO holding (
-                        portfolio_name, symbol, scheme_name, name_confirmed,
+                        portfolio_name, symbol, scheme_name, stock_name, name_confirmed,
                         person, app, remarks, status, created_at, updated_at
-                    ) VALUES (?, ?, ?, 1, ?, ?, ?, 'sold', ?, ?)
+                    ) VALUES (?, ?, ?, ?, 1, ?, ?, ?, 'sold', ?, ?)
                     """,
-                    (norm_port, scheme, scheme, person, app, remarks, now, now),
+                    (norm_port, ticker, stock_name or ticker, stock_name or ticker, person, app, remarks, now, now),
                 )
                 holding_id = h_cur.lastrowid
 
@@ -576,21 +614,34 @@ def import_workbook(file_path_or_bytes: str | Path | io.BytesIO, replace: bool =
             report["portfolios"][norm_port] = port_stats
 
         # -------------------------------------------------------------------
-        # 4. Parse Summary Panel from Loan Sheet (Cols 39-40, Rows 76-87)
+        # 4. Parse Summary Panel from Loan Sheet (Cols 41-42, fallback 39-40)
         # -------------------------------------------------------------------
         loan_sheet_name = available_sheets.get("loan", available_sheets.get("loan "))
         if loan_sheet_name and loan_sheet_name in wb.sheetnames:
             ws_loan = wb[loan_sheet_name]
+            summary_label_col = SUMMARY_LABEL_COLUMN
+            summary_val_col = SUMMARY_VALUE_COLUMN
+            for candidate_col in (SUMMARY_LABEL_COLUMN, 39):
+                cand_labels = {
+                    normalize_label(ws_loan.cell(r, candidate_col).value)
+                    for r in range(1, min(ws_loan.max_row + 1, 150))
+                    if ws_loan.cell(r, candidate_col).value
+                }
+                if any("loan" in l or "stock" in l or "invest" in l for l in cand_labels):
+                    summary_label_col = candidate_col
+                    summary_val_col = candidate_col + 1
+                    break
+
             label_rows = {
-                normalize_label(ws_loan.cell(r, SUMMARY_LABEL_COLUMN).value): r
+                normalize_label(ws_loan.cell(r, summary_label_col).value): r
                 for r in range(1, ws_loan.max_row + 1)
-                if ws_loan.cell(r, SUMMARY_LABEL_COLUMN).value
+                if ws_loan.cell(r, summary_label_col).value
             }
             for item in SUMMARY_PANEL_CONFIG:
                 if item["type"] != "fixed":
                     continue
                 r = label_rows.get(normalize_label(item["label"]), item["row"])
-                val, _ = _safe_number(ws_loan.cell(r, SUMMARY_VALUE_COLUMN).value)
+                val, _ = _safe_number(ws_loan.cell(r, summary_val_col).value)
                 conn.execute(
                     """
                     INSERT INTO summary_value (key, value, label, updated_at)
@@ -631,6 +682,7 @@ def _write_holding_to_sheet(
             lot_item = {
                 "symbol": item.get("symbol"),
                 "scheme_name": item.get("scheme_name"),
+                "stock_name": item.get("stock_name") or item.get("scheme_name") or item.get("symbol") or "",
                 "first_invest_date": lot.get("invest_date"),
                 "current_date": item.get("current_date"),
                 "years": lot.get("years", 0),
@@ -714,10 +766,10 @@ def export_workbook(
 
             # Holdings Total Row
             ws.cell(curr_row, 1, value="Total").font = total_font
-            ws.cell(curr_row, 9, value=open_totals["invested_amount"]).font = total_font
-            ws.cell(curr_row, 12, value=open_totals["current_total"]).font = total_font
-            ws.cell(curr_row, 13, value=open_totals["earned"]).font = total_font
-            ws.cell(curr_row, 14, value=open_totals["loss"]).font = total_font
+            ws.cell(curr_row, 10, value=open_totals["invested_amount"]).font = total_font
+            ws.cell(curr_row, 13, value=open_totals["current_total"]).font = total_font
+            ws.cell(curr_row, 14, value=open_totals["earned"]).font = total_font
+            ws.cell(curr_row, 15, value=open_totals["loss"]).font = total_font
             curr_row += 3
 
             # Sold Section Header
@@ -731,10 +783,10 @@ def export_workbook(
 
             # Sold Total Row
             ws.cell(curr_row, 1, value="Total").font = total_font
-            ws.cell(curr_row, 9, value=sold_totals["invested_amount"]).font = total_font
-            ws.cell(curr_row, 12, value=sold_totals["current_total"]).font = total_font
-            ws.cell(curr_row, 13, value=sold_totals["earned"]).font = total_font
-            ws.cell(curr_row, 14, value=sold_totals["loss"]).font = total_font
+            ws.cell(curr_row, 10, value=sold_totals["invested_amount"]).font = total_font
+            ws.cell(curr_row, 13, value=sold_totals["current_total"]).font = total_font
+            ws.cell(curr_row, 14, value=sold_totals["earned"]).font = total_font
+            ws.cell(curr_row, 15, value=sold_totals["loss"]).font = total_font
             curr_row += 2
 
             # Dividend Section
@@ -758,42 +810,43 @@ def export_workbook(
 
         else:
             # Layout 2: Side-by-Side (Bapa / Loan)
+            sold_start_col = SOLD_START_COLUMN.get(port_key, 21)
             ws.cell(1, 1, value="Stock Invest Details").font = header_font
-            ws.cell(1, 20, value="Stock Sold").font = header_font
+            ws.cell(1, sold_start_col, value="Stock Sold").font = header_font
 
             # Row 2: Headers
             for c_idx, h in enumerate(HOLDING_COLUMNS, start=1):
                 c1 = ws.cell(2, c_idx, value=h)
                 c1.font = header_font
                 c1.fill = header_fill
-                c2 = ws.cell(2, c_idx + 19, value=h)
+                c2 = ws.cell(2, c_idx + sold_start_col - 1, value=h)
                 c2.font = header_font
                 c2.fill = sold_fill
 
-            # Write Open Holdings in Cols 1-18 (expanding multi-buy lots)
+            # Write Open Holdings in Cols 1-19 (expanding multi-buy lots)
             curr_row = 3
             for item in enriched_open:
                 curr_row = _write_holding_to_sheet(ws, curr_row, 1, item)
 
             # Holdings Total
             ws.cell(curr_row, 1, value="Total").font = total_font
-            ws.cell(curr_row, 9, value=open_totals["invested_amount"]).font = total_font
-            ws.cell(curr_row, 12, value=open_totals["current_total"]).font = total_font
-            ws.cell(curr_row, 13, value=open_totals["earned"]).font = total_font
-            ws.cell(curr_row, 14, value=open_totals["loss"]).font = total_font
+            ws.cell(curr_row, 10, value=open_totals["invested_amount"]).font = total_font
+            ws.cell(curr_row, 13, value=open_totals["current_total"]).font = total_font
+            ws.cell(curr_row, 14, value=open_totals["earned"]).font = total_font
+            ws.cell(curr_row, 15, value=open_totals["loss"]).font = total_font
 
-            # Write Sold in Cols 20-37
+            # Write Sold in Cols 21-39
             sold_curr_row = 3
             for item in enriched_sold:
-                _write_sold_row_to_cells(ws, sold_curr_row, 20, item)
+                _write_sold_row_to_cells(ws, sold_curr_row, sold_start_col, item)
                 sold_curr_row += 1
 
             # Sold Total
-            ws.cell(sold_curr_row, 20, value="Total").font = total_font
-            ws.cell(sold_curr_row, 28, value=sold_totals["invested_amount"]).font = total_font
-            ws.cell(sold_curr_row, 31, value=sold_totals["current_total"]).font = total_font
-            ws.cell(sold_curr_row, 32, value=sold_totals["earned"]).font = total_font
-            ws.cell(sold_curr_row, 33, value=sold_totals["loss"]).font = total_font
+            ws.cell(sold_curr_row, sold_start_col, value="Total").font = total_font
+            ws.cell(sold_curr_row, sold_start_col + 9, value=sold_totals["invested_amount"]).font = total_font
+            ws.cell(sold_curr_row, sold_start_col + 12, value=sold_totals["current_total"]).font = total_font
+            ws.cell(sold_curr_row, sold_start_col + 13, value=sold_totals["earned"]).font = total_font
+            ws.cell(sold_curr_row, sold_start_col + 14, value=sold_totals["loss"]).font = total_font
 
             # Dividends below Holdings
             div_start_row = max(curr_row + 3, 105)
@@ -818,8 +871,9 @@ def export_workbook(
             # Loan Summary Panel in Cols 39-40
             if port_key == "LOAN":
                 sum_vals = sum_repo.get_all()
-                loan_earned = open_totals["earned"] + sold_totals["earned"]
-                loan_loss = open_totals["loss"] + sold_totals["loss"]
+                # Stock Profit in Block B reflects realized gains from sold positions: Earned total - Loss total
+                loan_earned = sold_totals["earned"]
+                loan_loss = sold_totals["loss"]
                 panel = compute_summary_panel(
                     sum_vals,
                     loan_earned=loan_earned,
@@ -882,7 +936,7 @@ def export_csv(
     sold_totals = compute_totals(enriched_sold)
 
     headers = [
-        "Section", "Scheme", "Invest Date", "Current Date", "Years", "Months",
+        "Section", "StockTicker", "StockName", "Invest Date", "Current Date", "Years", "Months",
         "Quantity", "Avg Price", "LTP", "Invested Amount", "Buy Charge", "Sell Charge",
         "Current Total", "Earned", "Loss", "Annual Return %", "Total Return %",
         "App / Person", "Remarks"
@@ -899,12 +953,15 @@ def export_csv(
 
     # 1. Open holdings (expanding lots)
     for h in enriched_open:
+        ticker = h.get("symbol") or ""
+        stock_name = h.get("stock_name") or h.get("scheme_name") or ""
         lots = h.get("lots") or []
         if len(lots) > 1:
             for lot in lots:
                 writer.writerow([
                     "Open",
-                    h.get("scheme_name") or h.get("symbol"),
+                    ticker,
+                    stock_name,
                     format_sheet_date(lot.get("invest_date", "")),
                     format_sheet_date(h.get("current_date", "")),
                     lot.get("years", 0),
@@ -926,7 +983,8 @@ def export_csv(
         else:
             writer.writerow([
                 "Open",
-                h.get("scheme_name") or h.get("symbol"),
+                ticker,
+                stock_name,
                 format_sheet_date(h.get("first_invest_date", "")),
                 format_sheet_date(h.get("current_date", "")),
                 h.get("years", 0),
@@ -947,7 +1005,7 @@ def export_csv(
             ])
 
     writer.writerow([
-        "Total Open", "", "", "", "", "", "", "", "",
+        "Total Open", "", "", "", "", "", "", "", "", "",
         open_totals["invested_amount"], "", "", open_totals["current_total"],
         open_totals["earned"], open_totals["loss"], "", "", "", ""
     ])
@@ -957,9 +1015,12 @@ def export_csv(
     writer.writerow(["--- Sold Positions ---"])
     writer.writerow(headers)
     for s in enriched_sold:
+        ticker = s.get("symbol") or ""
+        stock_name = s.get("stock_name") or s.get("scheme_name") or ""
         writer.writerow([
             "Sold",
-            s.get("scheme_name") or s.get("symbol"),
+            ticker,
+            stock_name,
             format_sheet_date(s.get("invest_date", "")),
             format_sheet_date(s.get("sell_date", "")),
             s.get("years", 0),
@@ -980,7 +1041,7 @@ def export_csv(
         ])
 
     writer.writerow([
-        "Total Sold", "", "", "", "", "", "", "", "",
+        "Total Sold", "", "", "", "", "", "", "", "", "",
         sold_totals["invested_amount"], "", "", sold_totals["current_total"],
         sold_totals["earned"], sold_totals["loss"], "", "", "", ""
     ])
@@ -990,44 +1051,46 @@ def export_csv(
 
 
 def _write_holding_row_to_cells(ws: openpyxl.worksheet.worksheet.Worksheet, row: int, start_col: int, item: dict[str, Any]) -> None:
-    """Helper to populate an 18-column open holding row."""
-    ws.cell(row, start_col, value=item.get("symbol") or item.get("scheme_name"))
-    ws.cell(row, start_col + 1, value=format_sheet_date(item.get("first_invest_date", "")))
-    ws.cell(row, start_col + 2, value=format_sheet_date(item.get("current_date", "")))
-    ws.cell(row, start_col + 3, value=item.get("years", 0))
-    ws.cell(row, start_col + 4, value=item.get("months", 0))
-    ws.cell(row, start_col + 5, value=item.get("quantity", 0))
-    ws.cell(row, start_col + 6, value=item.get("avg_price", 0))
-    ws.cell(row, start_col + 7, value=item.get("ltp", 0))
-    ws.cell(row, start_col + 8, value=item.get("invested_amount", 0))
-    ws.cell(row, start_col + 9, value=item.get("buy_charge", 0))
-    ws.cell(row, start_col + 10, value=item.get("sell_charge", 0))
-    ws.cell(row, start_col + 11, value=item.get("current_total", 0))
-    ws.cell(row, start_col + 12, value=item.get("earned", 0))
-    ws.cell(row, start_col + 13, value=item.get("loss", 0))
-    ws.cell(row, start_col + 14, value=item.get("annual_return", 0))
-    ws.cell(row, start_col + 15, value=item.get("total_return", 0))
-    ws.cell(row, start_col + 16, value=item.get("app") or item.get("person") or "")
-    ws.cell(row, start_col + 17, value=item.get("remarks", ""))
+    """Helper to populate a 19-column open holding row."""
+    ws.cell(row, start_col, value=item.get("symbol") or "")
+    ws.cell(row, start_col + 1, value=item.get("stock_name") or item.get("scheme_name") or "")
+    ws.cell(row, start_col + 2, value=format_sheet_date(item.get("first_invest_date", "")))
+    ws.cell(row, start_col + 3, value=format_sheet_date(item.get("current_date", "")))
+    ws.cell(row, start_col + 4, value=item.get("years", 0))
+    ws.cell(row, start_col + 5, value=item.get("months", 0))
+    ws.cell(row, start_col + 6, value=item.get("quantity", 0))
+    ws.cell(row, start_col + 7, value=item.get("avg_price", 0))
+    ws.cell(row, start_col + 8, value=item.get("ltp", 0))
+    ws.cell(row, start_col + 9, value=item.get("invested_amount", 0))
+    ws.cell(row, start_col + 10, value=item.get("buy_charge", 0))
+    ws.cell(row, start_col + 11, value=item.get("sell_charge", 0))
+    ws.cell(row, start_col + 12, value=item.get("current_total", 0))
+    ws.cell(row, start_col + 13, value=item.get("earned", 0))
+    ws.cell(row, start_col + 14, value=item.get("loss", 0))
+    ws.cell(row, start_col + 15, value=item.get("annual_return", 0))
+    ws.cell(row, start_col + 16, value=item.get("total_return", 0))
+    ws.cell(row, start_col + 17, value=item.get("app") or item.get("person") or "")
+    ws.cell(row, start_col + 18, value=item.get("remarks", ""))
 
 
 def _write_sold_row_to_cells(ws: openpyxl.worksheet.worksheet.Worksheet, row: int, start_col: int, item: dict[str, Any]) -> None:
-    """Helper to populate an 18-column sold row."""
-    ws.cell(row, start_col, value=item.get("symbol") or item.get("scheme_name"))
-    ws.cell(row, start_col + 1, value=format_sheet_date(item.get("invest_date", "")))
-    ws.cell(row, start_col + 2, value=format_sheet_date(item.get("sell_date", "")))
-    ws.cell(row, start_col + 3, value=item.get("years", 0))
-    ws.cell(row, start_col + 4, value=item.get("months", 0))
-    ws.cell(row, start_col + 5, value=item.get("quantity", 0))
-    ws.cell(row, start_col + 6, value=item.get("avg_price", 0))
-    ws.cell(row, start_col + 7, value=item.get("ltp", 0))
-    ws.cell(row, start_col + 8, value=item.get("invested_amount", 0))
-    ws.cell(row, start_col + 9, value=item.get("buy_charge", 0))
-    ws.cell(row, start_col + 10, value=item.get("sell_charge", 0))
-    ws.cell(row, start_col + 11, value=item.get("current_total", 0))
-    ws.cell(row, start_col + 12, value=item.get("earned", 0))
-    ws.cell(row, start_col + 13, value=item.get("loss", 0))
-    ws.cell(row, start_col + 14, value=item.get("annual_return", 0))
-    ws.cell(row, start_col + 15, value=item.get("total_return", 0))
-    ws.cell(row, start_col + 16, value=item.get("app") or item.get("person") or "")
-    ws.cell(row, start_col + 17, value=item.get("remarks", ""))
+    """Helper to populate a 19-column sold row."""
+    ws.cell(row, start_col, value=item.get("symbol") or "")
+    ws.cell(row, start_col + 1, value=item.get("stock_name") or item.get("scheme_name") or "")
+    ws.cell(row, start_col + 2, value=format_sheet_date(item.get("invest_date", "")))
+    ws.cell(row, start_col + 3, value=format_sheet_date(item.get("sell_date", "")))
+    ws.cell(row, start_col + 4, value=item.get("years", 0))
+    ws.cell(row, start_col + 5, value=item.get("months", 0))
+    ws.cell(row, start_col + 6, value=item.get("quantity", 0))
+    ws.cell(row, start_col + 7, value=item.get("avg_price", 0))
+    ws.cell(row, start_col + 8, value=item.get("ltp", 0))
+    ws.cell(row, start_col + 9, value=item.get("invested_amount", 0))
+    ws.cell(row, start_col + 10, value=item.get("buy_charge", 0))
+    ws.cell(row, start_col + 11, value=item.get("sell_charge", 0))
+    ws.cell(row, start_col + 12, value=item.get("current_total", 0))
+    ws.cell(row, start_col + 13, value=item.get("earned", 0))
+    ws.cell(row, start_col + 14, value=item.get("loss", 0))
+    ws.cell(row, start_col + 15, value=item.get("annual_return", 0))
+    ws.cell(row, start_col + 16, value=item.get("total_return", 0))
+    ws.cell(row, start_col + 17, value=item.get("app") or item.get("person") or "")
+    ws.cell(row, start_col + 18, value=item.get("remarks", ""))

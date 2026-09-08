@@ -17,3 +17,7 @@ logs/
 # Frontend
 frontend/node_modules/
 frontend/.vite/
+
+invest.xlsx
+promptmaker.md
+requirements.md

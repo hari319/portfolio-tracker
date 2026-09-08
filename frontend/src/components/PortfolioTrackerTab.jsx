@@ -19,6 +19,7 @@ import {
   X,
 } from 'lucide-react';
 import * as api from '../api';
+import useTickerLookup from '../hooks/useTickerLookup';
 import SoldPositionsModal from './SoldPositionsModal';
 import DividendsModal from './DividendsModal';
 import {
@@ -26,6 +27,11 @@ import {
   SELL_CHARGE_RATE,
 } from '../constants/portfolioCharges';
 import { formatDate } from '../utils/date';
+
+// Feature flags for temporarily hidden UI elements (see docs/PORTFOLIO_TRACKER.md §7)
+// Set either flag to true to re-enable the respective control in the UI
+const SHOW_IMPORT_BUTTON = false;
+const SHOW_CURRENT_DATE = false;
 
 function calculatePeriod(date1, date2) {
   if (!date1 || !date2) return { years: 0, months: 0 };
@@ -48,6 +54,7 @@ function calculatePeriod(date1, date2) {
 export default function PortfolioTrackerTab({ showToast }) {
   const [activePortfolio, setActivePortfolio] = useState('LOAN'); // 'MADI' | 'BAPA' | 'LOAN'
   const [data, setData] = useState(null);
+  const [exportingScope, setExportingScope] = useState(null); // 'all' | activePortfolio | null
   const [loading, setLoading] = useState(false);
   const [expandedHoldings, setExpandedHoldings] = useState({});
   const [expandedSoldHoldings, setExpandedSoldHoldings] = useState({});
@@ -67,9 +74,11 @@ export default function PortfolioTrackerTab({ showToast }) {
     person: 'MADI',
   });
 
-  // Balance sheet info popover state
+  // Balance sheet info popover states
   const [showBalanceInfo, setShowBalanceInfo] = useState(false);
   const balanceInfoRef = useRef(null);
+  const [showStockProfitInfo, setShowStockProfitInfo] = useState(false);
+  const stockProfitInfoRef = useRef(null);
 
   // Modals state
   const [showAddHoldingModal, setShowAddHoldingModal] =
@@ -82,10 +91,28 @@ export default function PortfolioTrackerTab({ showToast }) {
   const [showSummaryModal, setShowSummaryModal] = useState(false);
   const [showSoldModal, setShowSoldModal] = useState(false);
   const [showDividendsModal, setShowDividendsModal] = useState(false);
+  const [editTarget, setEditTarget] = useState(null); // { holding, lot, isSingleEntry, isHoldingOnly }
 
   // Forms state
+  const [editForm, setEditForm] = useState({
+    symbol: '',
+    stock_name: '',
+    scheme_name: '',
+    name_confirmed: true,
+    person: 'MADI',
+    holding_remarks: '',
+    invest_date: '',
+    quantity: '',
+    avg_price: '',
+    invested_amount: '',
+    buy_charge: '',
+    remarks: '',
+    manual_override_invested: false,
+    manual_override_buy_charge: false,
+  });
   const [holdingForm, setHoldingForm] = useState({
     symbol: '',
+    stock_name: '',
     scheme_name: '',
     name_confirmed: false,
     invest_date: new Date().toISOString().slice(0, 10),
@@ -96,11 +123,9 @@ export default function PortfolioTrackerTab({ showToast }) {
     bought_reason: '',
   });
 
-  const [lookupStatus, setLookupStatus] = useState({
-    loading: false,
-    found: null,
-    message: '',
-  });
+  const addLookup = useTickerLookup();
+  const editLookup = useTickerLookup();
+  const lookupStatus = addLookup.lookupStatus;
   const [loanSummary, setLoanSummary] = useState(null);
 
   const [lotForm, setLotForm] = useState({
@@ -171,47 +196,24 @@ export default function PortfolioTrackerTab({ showToast }) {
     [activePortfolio, showToast],
   );
 
-  const handleTickerLookup = async (sym) => {
-    if (!sym || sym.trim().length < 2) return;
-    setLookupStatus({
-      loading: true,
-      found: null,
-      message: 'Looking up ticker name...',
-    });
-    try {
-      const res = await api.lookupTicker(sym.trim());
-      if (res && res.ok && res.found) {
+  const handleTickerLookup = (sym) => {
+    addLookup.handleLookup(
+      sym,
+      (res) => {
         setHoldingForm((prev) => ({
           ...prev,
-          scheme_name: prev.scheme_name || res.name,
+          stock_name: res.name || prev.stock_name || prev.scheme_name,
+          scheme_name: res.name || prev.scheme_name,
           name_confirmed: true,
         }));
-        setLookupStatus({
-          loading: false,
-          found: true,
-          message: `Found: ${res.name} [${res.resolved_symbol}]${res.price ? ` (LTP: ₹${res.price})` : ''}`,
-        });
-      } else {
+      },
+      () => {
         setHoldingForm((prev) => ({
           ...prev,
           name_confirmed: false,
         }));
-        setLookupStatus({
-          loading: false,
-          found: false,
-          message:
-            'Stock name could not be automatically found. Please enter Scheme Name manually and confirm.',
-        });
-      }
-    } catch (e) {
-      setHoldingForm((prev) => ({ ...prev, name_confirmed: false }));
-      setLookupStatus({
-        loading: false,
-        found: false,
-        message:
-          'Could not lookup ticker. Please enter Scheme Name manually.',
-      });
-    }
+      },
+    );
   };
 
   useEffect(() => {
@@ -233,24 +235,74 @@ export default function PortfolioTrackerTab({ showToast }) {
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, []);
 
-  // Click outside to dismiss balance sheet info popover
+  // Click outside to dismiss balance sheet info popovers
   useEffect(() => {
-    if (!showBalanceInfo) return;
+    if (!showBalanceInfo && !showStockProfitInfo) return;
     const handleClickOutside = (e) => {
       if (balanceInfoRef.current && !balanceInfoRef.current.contains(e.target)) {
         setShowBalanceInfo(false);
       }
+      if (stockProfitInfoRef.current && !stockProfitInfoRef.current.contains(e.target)) {
+        setShowStockProfitInfo(false);
+      }
     };
     document.addEventListener('mousedown', handleClickOutside);
     return () => document.removeEventListener('mousedown', handleClickOutside);
-  }, [showBalanceInfo]);
+  }, [showBalanceInfo, showStockProfitInfo]);
+
+  // Handle Excel download for All or active tab with proper feedback
+  const handleExport = async (portfolioScope = '') => {
+    const scopeKey = portfolioScope || 'all';
+    setExportingScope(scopeKey);
+    try {
+      const url = api.getExportUrl(portfolioScope, 'xlsx');
+      const res = await fetch(url);
+      if (!res.ok) {
+        throw new Error(`Export failed with status ${res.status}: ${res.statusText}`);
+      }
+      const blob = await res.blob();
+      const blobUrl = window.URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.style.display = 'none';
+      a.href = blobUrl;
+      const now = new Date();
+      const pad = (n) => String(n).padStart(2, '0');
+      const stamp = `${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}_${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}`;
+      const portLabel = portfolioScope ? portfolioScope.toUpperCase() : 'ALL';
+      let filename = `Portfolio_Tracker_${portLabel}_${stamp}.xlsx`;
+      const cd = res.headers.get('content-disposition');
+      if (cd && cd.includes('filename=')) {
+        const match = cd.match(/filename=["']?([^"';]+)["']?/);
+        if (match && match[1]) filename = match[1].trim();
+      }
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      setTimeout(() => {
+        window.URL.revokeObjectURL(blobUrl);
+        if (a.parentNode) {
+          a.parentNode.removeChild(a);
+        }
+      }, 1500);
+      showToast(
+        portfolioScope
+          ? `Exported ${portfolioScope} portfolio Excel sheet successfully.`
+          : 'Exported all portfolios Excel workbook successfully.'
+      );
+    } catch (err) {
+      showToast(err.message || 'Export failed.', true);
+    } finally {
+      setExportingScope(null);
+    }
+  };
 
   // Open Add Holding modal for specific portfolio & person
   const openAddHolding = (port = activePortfolio, person = 'MADI') => {
     setAddHoldingTarget({ portfolio: port, person });
-    setLookupStatus({ loading: false, found: null, message: '' });
+    addLookup.resetLookup();
     setHoldingForm({
       symbol: '',
+      stock_name: '',
       scheme_name: '',
       name_confirmed: false,
       invest_date: new Date().toISOString().slice(0, 10),
@@ -284,10 +336,12 @@ export default function PortfolioTrackerTab({ showToast }) {
     e.preventDefault();
     try {
       const targetPort = addHoldingTarget.portfolio || activePortfolio;
+      const finalStockName = (holdingForm.stock_name || holdingForm.scheme_name || '').trim();
       await api.addPortfolioHolding({
         portfolio: targetPort,
         symbol: holdingForm.symbol.trim().toUpperCase(),
-        scheme_name: holdingForm.scheme_name.trim(),
+        stock_name: finalStockName,
+        scheme_name: finalStockName,
         name_confirmed: holdingForm.name_confirmed,
         invest_date: holdingForm.invest_date,
         quantity: parseFloat(holdingForm.quantity),
@@ -303,9 +357,10 @@ export default function PortfolioTrackerTab({ showToast }) {
         }.`,
       );
       setShowAddHoldingModal(false);
-      setLookupStatus({ loading: false, found: null, message: '' });
+      addLookup.resetLookup();
       setHoldingForm({
         symbol: '',
+        stock_name: '',
         scheme_name: '',
         name_confirmed: false,
         invest_date: new Date().toISOString().slice(0, 10),
@@ -382,6 +437,125 @@ export default function PortfolioTrackerTab({ showToast }) {
       loadPortfolioData();
     } catch (err) {
       showToast(err.message, true);
+    }
+  };
+
+  // Open Edit Holding / Lot modal
+  const openEditHoldingOrLot = (holding, lot = null) => {
+    const isHoldingOnly = lot === null && holding.lots && holding.lots.length > 1;
+    const isSingleEntry = !holding.lots || holding.lots.length <= 1;
+    const targetLot = lot || (isSingleEntry && holding.lots ? holding.lots[0] : null);
+
+    const q = targetLot ? targetLot.quantity : '';
+    const avg = targetLot ? targetLot.avg_price : '';
+    const expectedInv = (parseFloat(q) || 0) * (parseFloat(avg) || 0);
+    const storedInv = targetLot ? targetLot.invested_amount : '';
+    const hasManualInv =
+      storedInv !== null &&
+      storedInv !== undefined &&
+      storedInv !== '' &&
+      Math.abs(parseFloat(storedInv) - expectedInv) > 0.01;
+    const storedBc = targetLot ? targetLot.buy_charge : '';
+    const hasManualBc = storedBc !== null && storedBc !== undefined && storedBc !== '';
+
+    setEditTarget({
+      holding,
+      lot: targetLot,
+      isSingleEntry,
+      isHoldingOnly,
+    });
+
+    const stockNameVal = holding.stock_name || holding.scheme_name || holding.symbol || '';
+    const hasValidName = Boolean(
+      holding.stock_name &&
+      holding.stock_name.trim().toUpperCase() !== (holding.symbol || '').trim().toUpperCase()
+    );
+    editLookup.resetLookup(
+      hasValidName
+        ? { loading: false, found: true, message: `Current: ${stockNameVal}` }
+        : { loading: false, found: null, message: '' }
+    );
+
+    setEditForm({
+      symbol: holding.symbol || '',
+      stock_name: stockNameVal,
+      scheme_name: holding.scheme_name || holding.symbol || '',
+      name_confirmed: Boolean(holding.name_confirmed || hasValidName),
+      person: holding.person || 'MADI',
+      holding_remarks: holding.remarks || '',
+      invest_date: targetLot?.invest_date || new Date().toISOString().slice(0, 10),
+      quantity: q,
+      avg_price: avg,
+      invested_amount:
+        storedInv !== null && storedInv !== undefined && storedInv !== ''
+          ? storedInv
+          : expectedInv > 0
+          ? expectedInv.toFixed(2)
+          : '',
+      buy_charge:
+        storedBc !== null && storedBc !== undefined && storedBc !== ''
+          ? storedBc
+          : '',
+      remarks: targetLot?.remarks || '',
+      manual_override_invested: hasManualInv,
+      manual_override_buy_charge: hasManualBc,
+    });
+  };
+
+  // Submit Edit Holding / Lot
+  const handleEditSubmit = async (e) => {
+    e.preventDefault();
+    if (!editTarget) return;
+    try {
+      const { holding, lot, isSingleEntry, isHoldingOnly } = editTarget;
+
+      // 1. If updating lot
+      if (!isHoldingOnly && lot) {
+        const q = parseFloat(editForm.quantity);
+        const avg = parseFloat(editForm.avg_price);
+        if (isNaN(q) || q <= 0 || isNaN(avg) || avg <= 0) {
+          showToast('Quantity and Avg Price must be positive numbers.', true);
+          return;
+        }
+
+        await api.updatePortfolioLot(lot.id, {
+          invest_date: editForm.invest_date,
+          quantity: q,
+          avg_price: avg,
+          invested_amount:
+            editForm.manual_override_invested && editForm.invested_amount !== ''
+              ? parseFloat(editForm.invested_amount)
+              : null,
+          buy_charge:
+            editForm.manual_override_buy_charge && editForm.buy_charge !== ''
+              ? parseFloat(editForm.buy_charge)
+              : null,
+          remarks: editForm.remarks.trim(),
+        });
+      }
+
+      // 2. If updating holding metadata (single-entry or holding-only)
+      if (isHoldingOnly || isSingleEntry) {
+        if (editLookup.lookupStatus.found === false && !editForm.name_confirmed) {
+          showToast('Please confirm the stock name before saving.', true);
+          return;
+        }
+        const finalStockName = (editForm.stock_name || editForm.scheme_name || '').trim();
+        await api.updatePortfolioHolding(holding.id, {
+          symbol: editForm.symbol.trim().toUpperCase(),
+          stock_name: finalStockName,
+          scheme_name: finalStockName,
+          name_confirmed: Boolean(editForm.name_confirmed),
+          person: activePortfolio === 'LOAN' ? editForm.person : null,
+          remarks: editForm.holding_remarks.trim(),
+        });
+      }
+
+      showToast('Holding entry updated successfully.');
+      setEditTarget(null);
+      loadPortfolioData(activePortfolio);
+    } catch (err) {
+      showToast(err.message || 'Failed to update entry.', true);
     }
   };
 
@@ -607,29 +781,43 @@ export default function PortfolioTrackerTab({ showToast }) {
 
   // Dynamic openTotals computed for filtered items
   const filteredOpenTotals = useMemo(() => {
-    if (!searchQuery.trim()) return openTotals;
-    const inv = filteredOpenHoldings.reduce(
-      (sum, h) => sum + (h.invested_amount || 0),
-      0,
-    );
-    const cur = filteredOpenHoldings.reduce(
-      (sum, h) => sum + (h.current_total || 0),
-      0,
-    );
-    const earned = filteredOpenHoldings.reduce(
-      (sum, h) => sum + (h.earned || 0),
-      0,
-    );
-    const loss = filteredOpenHoldings.reduce(
-      (sum, h) => sum + (h.loss || 0),
-      0,
-    );
+    let inv = 0;
+    let cur = 0;
+    let earned = 0;
+    let loss = 0;
+
+    if (!searchQuery.trim() && openTotals && Object.keys(openTotals).length > 0) {
+      inv = openTotals.invested_amount || 0;
+      cur = openTotals.current_total || 0;
+      earned = openTotals.earned || 0;
+      loss = openTotals.loss || 0;
+    } else {
+      inv = filteredOpenHoldings.reduce(
+        (sum, h) => sum + (h.invested_amount || 0),
+        0,
+      );
+      cur = filteredOpenHoldings.reduce(
+        (sum, h) => sum + (h.current_total || 0),
+        0,
+      );
+      earned = filteredOpenHoldings.reduce(
+        (sum, h) => sum + (h.earned || 0),
+        0,
+      );
+      loss = filteredOpenHoldings.reduce(
+        (sum, h) => sum + (h.loss || 0),
+        0,
+      );
+    }
+
+    const netProfit = earned + (loss <= 0 ? loss : -loss);
+
     return {
       invested_amount: inv,
       current_total: cur,
       earned,
       loss,
-      net_profit: cur - inv,
+      net_profit: Math.round(netProfit * 100) / 100,
     };
   }, [filteredOpenHoldings, searchQuery, openTotals]);
 
@@ -813,40 +1001,56 @@ export default function PortfolioTrackerTab({ showToast }) {
 
     return (
       <React.Fragment key={h.id}>
-        <tr>
-          <td className='col-sticky-expand text-center'>
-            {hasMultipleLots ? (
-              <button
-                type='button'
-                className='btn btn-sm btn-link p-0 text-decoration-none text-dark'
-                onClick={() => toggleExpand(h.id)}
-                title={
-                  isExpanded
-                    ? 'Collapse buy lots'
-                    : 'Expand buy lots'
-                }
+        <tr className={hasMultipleLots ? 'multi-entry-row' : ''}>
+          <td className='col-sticky-ticker col-sticky-scheme'>
+            <div className='ticker-cell-content'>
+              <strong title={h.symbol}>{h.symbol || h.scheme_name}</strong>
+              <span
+                className='stock-info-tooltip-trigger'
+                tabIndex={0}
+                title={h.stock_name || h.scheme_name || 'Name not available'}
+                aria-label={h.stock_name || h.scheme_name || 'Name not available'}
               >
-                {isExpanded ? (
-                  <ChevronDown size={16} />
-                ) : (
-                  <ChevronRight size={16} />
-                )}
-              </button>
-            ) : null}
-          </td>
-          <td className='col-sticky-scheme'>
-            <strong>{h.scheme_name || h.symbol}</strong>
-            {hasMultipleLots && (
-              <span className='badge bg-light text-secondary ms-2 border'>
-                {h.lots.length} buys
+                <Info size={13} className='stock-info-icon' />
+                <span className='stock-name-tooltip' role='tooltip'>
+                  {h.stock_name || h.scheme_name || 'Name not available'}
+                </span>
               </span>
-            )}
+              {hasMultipleLots && (
+                <span
+                  className='entry-count-badge'
+                  title={`${h.lots.length} buy entries`}
+                >
+                  {h.lots.length}
+                </span>
+              )}
+              {hasMultipleLots && (
+                <button
+                  type='button'
+                  className='expand-chevron-btn'
+                  onClick={() => toggleExpand(h.id)}
+                  title={
+                    isExpanded
+                      ? 'Collapse buy entries'
+                      : 'Expand buy entries'
+                  }
+                >
+                  {isExpanded ? (
+                    <ChevronDown size={14} />
+                  ) : (
+                    <ChevronRight size={14} />
+                  )}
+                </button>
+              )}
+            </div>
           </td>
           <td>{formatDate(h.first_invest_date)}</td>
-          <td>
-            {formatDate(h.current_date ||
-              new Date().toISOString().slice(0, 10))}
-          </td>
+          {SHOW_CURRENT_DATE && (
+            <td>
+              {formatDate(h.current_date ||
+                new Date().toISOString().slice(0, 10))}
+            </td>
+          )}
           <td className='text-end'>{h.years}</td>
           <td className='text-end'>{h.months}</td>
 
@@ -928,6 +1132,19 @@ export default function PortfolioTrackerTab({ showToast }) {
               <button
                 type='button'
                 className='btn btn-outline-primary'
+                title={hasMultipleLots ? 'Edit Holding Info' : 'Edit Holding & Lot'}
+                onClick={() =>
+                  openEditHoldingOrLot(
+                    h,
+                    hasMultipleLots ? null : (h.lots && h.lots[0]),
+                  )
+                }
+              >
+                <Edit3 size={13} />
+              </button>
+              <button
+                type='button'
+                className='btn btn-outline-primary'
                 title='Add Buy Lot'
                 onClick={() => setShowAddLotModal(h)}
               >
@@ -983,105 +1200,129 @@ export default function PortfolioTrackerTab({ showToast }) {
         </tr>
 
         {/* Expanded Child Lots */}
-        {isExpanded && h.lots && (
-          <tr className='bg-light'>
-            <td colSpan={19} className='p-3'>
-              <div className='ps-4 border-start border-3 border-primary'>
-                <h6
-                  className='fw-bold mb-2 text-primary'
-                  style={{ fontSize: '0.85rem' }}
-                >
-                  Individual Buy Lots for{' '}
-                  {h.scheme_name || h.symbol}:
-                </h6>
-                <table
-                  className='table table-sm table-bordered bg-white mb-0'
+        {isExpanded && hasMultipleLots && h.lots && h.lots.map((lot, idx) => {
+          const isLotPositive = lot.total_return >= 0;
+          const isLastChild = idx === h.lots.length - 1;
+          return (
+            <tr
+              key={`lot-${lot.id}`}
+              className={`multi-entry-child-row ${isLastChild ? 'multi-entry-last-child' : ''}`}
+            >
+              <td
+                className='col-sticky-ticker col-sticky-scheme col-sticky-ticker-blank col-sticky-scheme-blank'
+                style={{ backgroundColor: '#ffffff' }}
+              ></td>
+              <td>
+                <span className='entry-tree-indicator'>
+                  {isLastChild ? '└─' : '├─'}
+                </span>
+                {formatDate(lot.invest_date)}
+              </td>
+              {SHOW_CURRENT_DATE && (
+                <td>
+                  {formatDate(
+                    lot.current_date ||
+                      h.current_date ||
+                      new Date().toISOString().slice(0, 10),
+                  )}
+                </td>
+              )}
+              <td className='text-end'>{lot.years}</td>
+              <td className='text-end'>{lot.months}</td>
+              <td className='text-end fw-semibold'>
+                {lot.quantity?.toLocaleString()}
+              </td>
+              <td className='text-end'>₹{lot.avg_price?.toFixed(2)}</td>
+              <td className='text-end fw-bold'>
+                ₹{h.ltp ? h.ltp.toFixed(2) : lot.avg_price?.toFixed(2)}
+              </td>
+              <td className='text-end'>
+                ₹{lot.invested_amount?.toLocaleString()}
+              </td>
+              <td
+                className='text-end text-muted'
+                style={{ fontSize: '0.8rem' }}
+              >
+                ₹{lot.buy_charge}
+              </td>
+              <td
+                className='text-end text-muted'
+                style={{ fontSize: '0.8rem' }}
+              >
+                ₹{lot.sell_charge}
+              </td>
+              <td className='text-end fw-bold'>
+                ₹{lot.current_total?.toLocaleString()}
+              </td>
+              <td className='text-end text-success'>
+                {lot.earned > 0
+                  ? `+₹${lot.earned.toLocaleString()}`
+                  : '—'}
+              </td>
+              <td className='text-end text-danger'>
+                {lot.loss < 0
+                  ? `-₹${Math.abs(lot.loss).toLocaleString()}`
+                  : '—'}
+              </td>
+              <td className='text-end'>
+                {lot.annual_return ? (
+                  <span
+                    className={
+                      lot.annual_return >= 0
+                        ? 'text-success'
+                        : 'text-danger'
+                    }
+                  >
+                    {lot.annual_return > 0 ? '+' : ''}
+                    {lot.annual_return.toFixed(2)}%
+                  </span>
+                ) : (
+                  '—'
+                )}
+              </td>
+              <td className='text-end'>
+                <span
+                  className={`badge ${isLotPositive ? 'bg-success' : 'bg-danger'}`}
                   style={{ fontSize: '0.8rem' }}
                 >
-                  <thead className='table-secondary'>
-                    <tr>
-                      <th>Buy Date</th>
-                      <th className='text-end'>
-                        Quantity
-                      </th>
-                      <th className='text-end'>
-                        Buy Price
-                      </th>
-                      <th className='text-end'>
-                        Invested
-                      </th>
-                      <th className='text-end'>
-                        Buy Chg
-                      </th>
-                      <th className='text-end'>
-                        Current Total
-                      </th>
-                      <th className='text-end'>P&L</th>
-                      <th>Remarks</th>
-                      <th className='text-center'>
-                        Action
-                      </th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {h.lots.map((lot) => (
-                      <tr key={lot.id}>
-                        <td>{formatDate(lot.invest_date)}</td>
-                        <td className='text-end'>
-                          {lot.quantity}
-                        </td>
-                        <td className='text-end'>
-                          ₹{lot.avg_price}
-                        </td>
-                        <td className='text-end'>
-                          ₹{lot.invested_amount}
-                        </td>
-                        <td className='text-end text-muted'>
-                          ₹{lot.buy_charge}
-                        </td>
-                        <td className='text-end'>
-                          ₹{lot.current_total}
-                        </td>
-                        <td
-                          className={`text-end ${lot.earned > 0 ? 'text-success' : 'text-danger'}`}
-                        >
-                          {lot.earned > 0
-                            ? `+₹${lot.earned}`
-                            : `-₹${Math.abs(lot.loss)}`}
-                        </td>
-                        <td
-                          style={{
-                            minWidth: '150px',
-                            maxWidth: '240px',
-                            whiteSpace: 'normal',
-                            wordBreak: 'break-word',
-                          }}
-                        >
-                          {lot.remarks || '—'}
-                        </td>
-                        <td className='text-center'>
-                          <button
-                            type='button'
-                            className='btn btn-sm btn-link text-danger p-0'
-                            onClick={() =>
-                              handleDeleteLot(
-                                lot,
-                                h.symbol,
-                              )
-                            }
-                            title='Delete Lot'
-                          >
-                            <Trash2 size={12} />
-                          </button>
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            </td>
-          </tr>
-        )}
+                  {isLotPositive ? '+' : ''}
+                  {lot.total_return?.toFixed(2)}%
+                </span>
+              </td>
+              <td
+                className='text-muted'
+                style={{
+                  minWidth: '150px',
+                  maxWidth: '240px',
+                  whiteSpace: 'normal',
+                  wordBreak: 'break-word',
+                }}
+              >
+                {lot.remarks || '—'}
+              </td>
+              <td className='text-center'>
+                <div className='btn-group btn-group-sm'>
+                  <button
+                    type='button'
+                    className='btn btn-outline-primary'
+                    onClick={() => openEditHoldingOrLot(h, lot)}
+                    title='Edit Buy Lot'
+                  >
+                    <Edit3 size={13} />
+                  </button>
+                  <button
+                    type='button'
+                    className='btn btn-outline-danger'
+                    onClick={() => handleDeleteLot(lot, h.symbol)}
+                    title='Delete Lot'
+                  >
+                    <Trash2 size={13} />
+                  </button>
+                </div>
+              </td>
+            </tr>
+          );
+        })}
       </React.Fragment>
     );
   };
@@ -1125,42 +1366,64 @@ export default function PortfolioTrackerTab({ showToast }) {
 
           {/* Export Scoping & Formats (§1.3) */}
           <div className='btn-group btn-group-sm'>
-            <a
-              href={api.getExportUrl('', 'xlsx')}
-              download
+            <button
+              type='button'
               className='btn btn-outline-secondary'
+              onClick={() => handleExport('')}
+              disabled={Boolean(exportingScope)}
               title='Download full Excel workbook with all portfolios matching Invest.xlsx'
             >
-              <Download
-                size={14}
-                className='me-1 inline-block'
-              />
+              {exportingScope === 'all' ? (
+                <span
+                  className='spinner-border spinner-border-sm me-1'
+                  role='status'
+                />
+              ) : (
+                <Download
+                  size={14}
+                  className='me-1 inline-block'
+                />
+              )}
               Excel (All)
-            </a>
-            <a
-              href={api.getExportUrl(activePortfolio, 'xlsx')}
-              download
+            </button>
+            <button
+              type='button'
               className='btn btn-outline-secondary'
+              onClick={() => handleExport(activePortfolio)}
+              disabled={Boolean(exportingScope)}
               title={`Download Excel workbook for ${activePortfolio} only`}
             >
+              {exportingScope === activePortfolio ? (
+                <span
+                  className='spinner-border spinner-border-sm me-1'
+                  role='status'
+                />
+              ) : (
+                <Download
+                  size={14}
+                  className='me-1 inline-block'
+                />
+              )}
               {activePortfolio} (.xlsx)
-            </a>
+            </button>
           </div>
 
-          <button
-            type='button'
-            className='btn btn-sm btn-outline-secondary'
-            onClick={() => {
-              setImportReport(null);
-              setShowImportModal(true);
-            }}
-          >
-            <Upload
-              size={15}
-              className='me-1 inline-block'
-            />
-            Import Sheet
-          </button>
+          {SHOW_IMPORT_BUTTON && (
+            <button
+              type='button'
+              className='btn btn-sm btn-outline-secondary'
+              onClick={() => {
+                setImportReport(null);
+                setShowImportModal(true);
+              }}
+            >
+              <Upload
+                size={15}
+                className='me-1 inline-block'
+              />
+              Import Sheet
+            </button>
+          )}
 
 
         </div>
@@ -1297,15 +1560,11 @@ export default function PortfolioTrackerTab({ showToast }) {
           }}
         >
           <table className='table table-hover table-striped table-sticky-tfoot align-middle mb-0 text-nowrap'>
-            <thead
-              className='table-light position-sticky top-0'
-              style={{ zIndex: 3 }}
-            >
+            <thead className='table-light'>
               <tr style={{ fontSize: '0.82rem' }}>
-                <th className='col-sticky-expand'></th>
-                <th className='col-sticky-scheme'>Scheme</th>
+                <th className='col-sticky-ticker col-sticky-scheme'>StockTicker</th>
                 <th>Invest Date</th>
-                <th>Current Date</th>
+                {SHOW_CURRENT_DATE && <th>Current Date</th>}
                 <th
                   className='text-end'
                   title='Years held'
@@ -1337,7 +1596,7 @@ export default function PortfolioTrackerTab({ showToast }) {
               {sortedOpenHoldings.length === 0 ? (
                 <tr>
                   <td
-                    colSpan={19}
+                    colSpan={SHOW_CURRENT_DATE ? 18 : 17}
                     className='text-center py-4 text-muted'
                   >
                     No open holdings in {activePortfolio}. Click "Add
@@ -1348,7 +1607,7 @@ export default function PortfolioTrackerTab({ showToast }) {
                 <>
                   {/* MADI Section */}
                   <tr className='table-primary border-top border-bottom border-primary-subtle fw-semibold'>
-                    <td colSpan={9} className='py-2 px-3' style={{ position: 'sticky', left: 0, zIndex: 1 }}>
+                    <td colSpan={SHOW_CURRENT_DATE ? 8 : 7} className='py-2 px-3' style={{ position: 'sticky', left: 0, zIndex: 1 }}>
                       <div className='d-flex align-items-center gap-2'>
                         <span className='badge bg-primary px-2.5 py-1 text-uppercase fw-bold'>
                           MADI
@@ -1417,7 +1676,7 @@ export default function PortfolioTrackerTab({ showToast }) {
                   {loanOpenGroups.madi.length === 0 ? (
                     <tr>
                       <td
-                        colSpan={19}
+                        colSpan={SHOW_CURRENT_DATE ? 18 : 17}
                         className='text-center py-2 text-muted fst-italic bg-light'
                       >
                         {searchQuery.trim()
@@ -1431,7 +1690,7 @@ export default function PortfolioTrackerTab({ showToast }) {
 
                   {/* BAPA Section */}
                   <tr className='table-info border-top border-bottom border-info-subtle fw-semibold'>
-                    <td colSpan={9} className='py-2 px-3' style={{ position: 'sticky', left: 0, zIndex: 1 }}>
+                    <td colSpan={SHOW_CURRENT_DATE ? 8 : 7} className='py-2 px-3' style={{ position: 'sticky', left: 0, zIndex: 1 }}>
                       <div className='d-flex align-items-center gap-2'>
                         <span className='badge bg-info text-dark px-2.5 py-1 text-uppercase fw-bold'>
                           BAPA
@@ -1500,7 +1759,7 @@ export default function PortfolioTrackerTab({ showToast }) {
                   {loanOpenGroups.bapa.length === 0 ? (
                     <tr>
                       <td
-                        colSpan={19}
+                        colSpan={SHOW_CURRENT_DATE ? 18 : 17}
                         className='text-center py-2 text-muted fst-italic bg-light'
                       >
                         {searchQuery.trim()
@@ -1516,7 +1775,7 @@ export default function PortfolioTrackerTab({ showToast }) {
                   {loanOpenGroups.other.length > 0 && (
                     <>
                       <tr className='table-secondary border-top border-bottom fw-semibold'>
-                        <td colSpan={9} className='py-2 px-3' style={{ position: 'sticky', left: 0, zIndex: 1 }}>
+                        <td colSpan={SHOW_CURRENT_DATE ? 8 : 7} className='py-2 px-3' style={{ position: 'sticky', left: 0, zIndex: 1 }}>
                           <div className='d-flex align-items-center gap-2'>
                             <span className='badge bg-secondary text-uppercase fw-bold'>
                               OTHER
@@ -1589,7 +1848,7 @@ export default function PortfolioTrackerTab({ showToast }) {
               ) : filteredOpenHoldings.length === 0 ? (
                 <tr>
                   <td
-                    colSpan={19}
+                    colSpan={SHOW_CURRENT_DATE ? 18 : 17}
                     className='text-center py-4 text-muted'
                   >
                     No open holdings matching "{searchQuery}".
@@ -1609,8 +1868,7 @@ export default function PortfolioTrackerTab({ showToast }) {
             {openHoldings.length > 0 && (
               <tfoot className='table-secondary fw-bold border-top border-2'>
                 <tr>
-                  <td className='col-sticky-expand'></td>
-                  <td colSpan={8} className='col-sticky-footer-label'>
+                  <td colSpan={SHOW_CURRENT_DATE ? 8 : 7} className='col-sticky-footer-label'>
                     Total ({filteredOpenHoldings.length} holdings
                     {searchQuery.trim() ? ` matching "${searchQuery}"` : ''})
                   </td>
@@ -1801,8 +2059,78 @@ export default function PortfolioTrackerTab({ showToast }) {
                     {summaryData.block_b.remaining_invest_loan?.toLocaleString()}
                   </span>
                 </div>
-                <div className='d-flex justify-content-between py-1'>
-                  <span>Stock Profit (Earned + Loss):</span>
+                <div className='d-flex justify-content-between align-items-center py-1'>
+                  <div
+                    className='d-flex align-items-center gap-1 position-relative'
+                    ref={stockProfitInfoRef}
+                    onMouseEnter={() => setShowStockProfitInfo(true)}
+                    onMouseLeave={() => setShowStockProfitInfo(false)}
+                  >
+                    <span>Stock Profit:</span>
+                    <button
+                      type='button'
+                      className='btn btn-link p-0 text-primary d-inline-flex align-items-center'
+                      onClick={() => setShowStockProfitInfo((prev) => !prev)}
+                      title='Earned total − Loss total of sold positions'
+                      aria-label='Stock profit calculation details'
+                    >
+                      <Info size={14} />
+                    </button>
+                    {showStockProfitInfo && (
+                      <div
+                        className='position-absolute bg-white text-dark p-3 rounded shadow-lg border'
+                        style={{
+                          top: '100%',
+                          left: 0,
+                          zIndex: 1050,
+                          width: '320px',
+                          fontSize: '0.8rem',
+                          lineHeight: '1.4',
+                          pointerEvents: 'none',
+                        }}
+                      >
+                        <div className='d-flex justify-content-between align-items-center mb-1 pb-1 border-bottom'>
+                          <strong className='text-primary d-flex align-items-center gap-1'>
+                            <Info size={13} /> Realized Stock Profit
+                          </strong>
+                        </div>
+                        <p className='mb-2 text-muted'>
+                          Calculated as <strong>Earned total − Loss total</strong> of sold positions under the <strong>LOAN</strong> portfolio.
+                        </p>
+                        <div className='bg-light p-2 rounded'>
+                          <div className='d-flex justify-content-between text-success mb-1'>
+                            <span>Sold Earned:</span>
+                            <span>
+                              +₹{(summaryData.block_b.sold_earned ?? soldTotals?.earned ?? 0).toLocaleString()}
+                            </span>
+                          </div>
+                          <div className='d-flex justify-content-between text-danger mb-1'>
+                            <span>Sold Loss:</span>
+                            <span>
+                              -₹{Math.abs(summaryData.block_b.sold_loss ?? soldTotals?.loss ?? 0).toLocaleString()}
+                            </span>
+                          </div>
+                          <hr className='my-1' />
+                          <div className='d-flex justify-content-between fw-bold text-dark'>
+                            <span>Net Stock Profit:</span>
+                            <span
+                              className={
+                                summaryData.block_b.stock_profit >= 0
+                                  ? 'text-success'
+                                  : 'text-danger'
+                              }
+                            >
+                              {summaryData.block_b.stock_profit >= 0 ? '+' : ''}₹
+                              {summaryData.block_b.stock_profit?.toLocaleString()}
+                            </span>
+                          </div>
+                        </div>
+                        <div className='mt-2 text-muted small' style={{ fontSize: '0.74rem' }}>
+                          Includes statutory charges. Open holdings are tracked separately in Block A.
+                        </div>
+                      </div>
+                    )}
+                  </div>
                   <span
                     className={
                       summaryData.block_b.stock_profit >= 0
@@ -1864,6 +2192,8 @@ export default function PortfolioTrackerTab({ showToast }) {
           });
           setShowNotesModal(noteItem);
         }}
+        onRefresh={() => loadPortfolioData(activePortfolio)}
+        showToast={showToast}
       />
 
       {/* Dividends Modal */}
@@ -1878,6 +2208,401 @@ export default function PortfolioTrackerTab({ showToast }) {
         onAddDividend={handleAddDividend}
         onDeleteDividend={handleDeleteDividend}
       />
+
+      {/* Edit Holding / Lot Entry Modal */}
+      {editTarget && (
+        <div className='modal-backdrop-custom' role='dialog' aria-modal='true'>
+          <div className='modal-dialog-custom' style={{ maxWidth: '580px' }}>
+            {/* Modal Header */}
+            <div className='modal-header-custom'>
+              <div>
+                <h3 className='modal-title-custom'>
+                  {editTarget.isHoldingOnly
+                    ? 'Edit Holding Info'
+                    : editTarget.isSingleEntry
+                    ? 'Edit Holding & Entry'
+                    : 'Edit Buy Lot'}
+                </h3>
+                <p className='modal-subtitle-custom'>
+                  {editTarget.holding.stock_name || editTarget.holding.scheme_name || editTarget.holding.symbol}
+                  {editTarget.holding.symbol ? ` (${editTarget.holding.symbol})` : ''}
+                </p>
+              </div>
+              <button
+                type='button'
+                className='modal-close-btn'
+                onClick={() => setEditTarget(null)}
+                aria-label='Close modal'
+              >
+                <X size={18} />
+              </button>
+            </div>
+
+            <form onSubmit={handleEditSubmit} autoComplete='off'>
+              <div>
+                {/* Holding metadata (StockTicker / StockName / Person) if single-entry or holding-only */}
+                {(editTarget.isHoldingOnly || editTarget.isSingleEntry) && (
+                  <div className='p-3 mb-3 bg-light rounded-3 border'>
+                    <div className='small fw-bold text-muted mb-2 text-uppercase' style={{ letterSpacing: '0.04em' }}>
+                      Holding Information
+                    </div>
+                    {activePortfolio === 'LOAN' && (
+                      <div className='mb-3'>
+                        <label className='form-label-custom'>Person / Account *</label>
+                        <div className='d-flex gap-3'>
+                          {['MADI', 'BAPA'].map((p) => (
+                            <div className='form-check' key={p}>
+                              <input
+                                className='form-check-input'
+                                type='radio'
+                                name='editPersonRadio'
+                                id={`editPerson_${p}`}
+                                value={p}
+                                checked={editForm.person === p}
+                                onChange={() => setEditForm((prev) => ({ ...prev, person: p }))}
+                              />
+                              <label className='form-check-label small fw-semibold' htmlFor={`editPerson_${p}`}>
+                                {p}
+                              </label>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                    <div className='mb-2'>
+                      <label className='form-label-custom'>StockTicker *</label>
+                      <div className='input-group'>
+                        <input
+                          type='text'
+                          className='form-control'
+                          placeholder='e.g. TATAGOLD or RELIANCE'
+                          value={editForm.symbol}
+                          onChange={(e) => {
+                            const newSym = e.target.value;
+                            setEditForm((prev) => ({
+                              ...prev,
+                              symbol: newSym,
+                              name_confirmed: false,
+                            }));
+                          }}
+                          onBlur={() =>
+                            editLookup.handleLookup(
+                              editForm.symbol,
+                              (res) => {
+                                setEditForm((prev) => ({
+                                  ...prev,
+                                  stock_name: res.name || prev.stock_name,
+                                  scheme_name: res.name || prev.scheme_name,
+                                  name_confirmed: true,
+                                }));
+                              },
+                              () => {
+                                setEditForm((prev) => ({ ...prev, name_confirmed: false }));
+                              },
+                            )
+                          }
+                          required
+                        />
+                        <button
+                          type='button'
+                          className='btn btn-outline-secondary'
+                          onClick={() =>
+                            editLookup.handleLookup(
+                              editForm.symbol,
+                              (res) => {
+                                setEditForm((prev) => ({
+                                  ...prev,
+                                  stock_name: res.name || prev.stock_name,
+                                  scheme_name: res.name || prev.scheme_name,
+                                  name_confirmed: true,
+                                }));
+                              },
+                              () => {
+                                setEditForm((prev) => ({ ...prev, name_confirmed: false }));
+                              },
+                            )
+                          }
+                          disabled={editLookup.lookupStatus.loading}
+                        >
+                          {editLookup.lookupStatus.loading ? 'Checking...' : 'Lookup'}
+                        </button>
+                      </div>
+                      {editLookup.lookupStatus.found === true && (
+                        <div className='text-success small mt-1 d-flex align-items-center'>
+                          <CheckCircle2 size={13} className='me-1' /> {editLookup.lookupStatus.message}
+                        </div>
+                      )}
+                      {editLookup.lookupStatus.found === false && (
+                        <div className='alert alert-warning py-1 px-2 small mt-1 mb-0'>
+                          ⚠️ {editLookup.lookupStatus.message}
+                        </div>
+                      )}
+                    </div>
+                    <div className='mb-2'>
+                      <label className='form-label-custom'>
+                        Stock Name{' '}
+                        {editLookup.lookupStatus.found === false ? '*' : '(Auto-fetched from ticker)'}
+                      </label>
+                      <input
+                        type='text'
+                        className='form-control'
+                        placeholder='Company / Stock Name'
+                        value={editForm.stock_name || editForm.scheme_name}
+                        onChange={(e) =>
+                          setEditForm((prev) => ({
+                            ...prev,
+                            stock_name: e.target.value,
+                            scheme_name: e.target.value,
+                          }))
+                        }
+                        required={editLookup.lookupStatus.found === false}
+                      />
+                    </div>
+                    {editLookup.lookupStatus.found === false && (
+                      <div className='form-check mb-2'>
+                        <input
+                          type='checkbox'
+                          className='form-check-input'
+                          id='confirmManualNameEdit'
+                          checked={Boolean(editForm.name_confirmed)}
+                          onChange={(e) =>
+                            setEditForm((prev) => ({
+                              ...prev,
+                              name_confirmed: e.target.checked,
+                            }))
+                          }
+                          required
+                        />
+                        <label className='form-check-label small' htmlFor='confirmManualNameEdit'>
+                          I confirm this stock name is correct (§3 requirement)
+                        </label>
+                      </div>
+                    )}
+                    <div>
+                      <label className='form-label-custom'>Holding Remarks</label>
+                      <input
+                        type='text'
+                        className='form-control'
+                        placeholder='Holding-level notes'
+                        value={editForm.holding_remarks}
+                        onChange={(e) => setEditForm({ ...editForm, holding_remarks: e.target.value })}
+                      />
+                    </div>
+                  </div>
+                )}
+
+                {/* Lot details if not holding-only */}
+                {!editTarget.isHoldingOnly && (
+                  <div>
+                    {!editTarget.isSingleEntry && (
+                      <div className='small fw-bold text-muted mb-2 text-uppercase' style={{ letterSpacing: '0.04em' }}>
+                        Buy Lot Entry Values
+                      </div>
+                    )}
+                    <div className='row g-2 mb-3'>
+                      <div className='col-6'>
+                        <label className='form-label-custom'>Invest Date *</label>
+                        <input
+                          type='date'
+                          className='form-control'
+                          value={editForm.invest_date}
+                          onChange={(e) => setEditForm({ ...editForm, invest_date: e.target.value })}
+                          required
+                        />
+                      </div>
+                      <div className='col-6'>
+                        <label className='form-label-custom'>Quantity (Q) *</label>
+                        <input
+                          type='number'
+                          step='any'
+                          className='form-control'
+                          value={editForm.quantity}
+                          onChange={(e) => {
+                            const newQ = e.target.value;
+                            setEditForm((prev) => {
+                              const q = parseFloat(newQ) || 0;
+                              const avg = parseFloat(prev.avg_price) || 0;
+                              const inv = prev.manual_override_invested
+                                ? prev.invested_amount
+                                : q > 0 && avg > 0
+                                ? (q * avg).toFixed(2)
+                                : '';
+                              const bc = prev.manual_override_buy_charge
+                                ? prev.buy_charge
+                                : inv > 0
+                                ? (inv * BUY_CHARGE_RATE).toFixed(2)
+                                : '';
+                              return {
+                                ...prev,
+                                quantity: newQ,
+                                invested_amount: inv,
+                                buy_charge: bc,
+                              };
+                            });
+                          }}
+                          required
+                        />
+                      </div>
+                    </div>
+
+                    <div className='mb-3'>
+                      <label className='form-label-custom'>Avg Buy Price (₹) *</label>
+                      <input
+                        type='number'
+                        step='0.01'
+                        className='form-control'
+                        value={editForm.avg_price}
+                        onChange={(e) => {
+                          const newAvg = e.target.value;
+                          setEditForm((prev) => {
+                            const avg = parseFloat(newAvg) || 0;
+                            const q = parseFloat(prev.quantity) || 0;
+                            const inv = prev.manual_override_invested
+                              ? prev.invested_amount
+                              : q > 0 && avg > 0
+                              ? (q * avg).toFixed(2)
+                              : '';
+                            const bc = prev.manual_override_buy_charge
+                              ? prev.buy_charge
+                              : inv > 0
+                              ? (inv * BUY_CHARGE_RATE).toFixed(2)
+                              : '';
+                            return {
+                              ...prev,
+                              avg_price: newAvg,
+                              invested_amount: inv,
+                              buy_charge: bc,
+                            };
+                          });
+                        }}
+                        required
+                      />
+                    </div>
+
+                    {/* Manual override for Invested Amount */}
+                    <div className='mb-3'>
+                      <div className='d-flex justify-content-between align-items-center mb-1'>
+                        <label className='form-label-custom mb-0'>Invested Amount (₹)</label>
+                        <div className='form-check form-check-inline m-0'>
+                          <input
+                            className='form-check-input'
+                            type='checkbox'
+                            id='overrideInvested'
+                            checked={editForm.manual_override_invested}
+                            onChange={(e) => {
+                              const checked = e.target.checked;
+                              setEditForm((prev) => {
+                                const q = parseFloat(prev.quantity) || 0;
+                                const avg = parseFloat(prev.avg_price) || 0;
+                                return {
+                                  ...prev,
+                                  manual_override_invested: checked,
+                                  invested_amount: checked
+                                    ? prev.invested_amount
+                                    : q > 0 && avg > 0
+                                    ? (q * avg).toFixed(2)
+                                    : '',
+                                };
+                              });
+                            }}
+                          />
+                          <label className='form-check-label small text-muted' htmlFor='overrideInvested'>
+                            Manual cost basis override
+                          </label>
+                        </div>
+                      </div>
+                      <input
+                        type='number'
+                        step='0.01'
+                        className='form-control'
+                        value={editForm.invested_amount}
+                        disabled={!editForm.manual_override_invested}
+                        onChange={(e) =>
+                          setEditForm({
+                            ...editForm,
+                            invested_amount: e.target.value,
+                          })
+                        }
+                      />
+                    </div>
+
+                    {/* Manual override for Buy Charge */}
+                    <div className='mb-3'>
+                      <div className='d-flex justify-content-between align-items-center mb-1'>
+                        <label className='form-label-custom mb-0'>Buy Charge (₹)</label>
+                        <div className='form-check form-check-inline m-0'>
+                          <input
+                            className='form-check-input'
+                            type='checkbox'
+                            id='overrideBuyCharge'
+                            checked={editForm.manual_override_buy_charge}
+                            onChange={(e) => {
+                              const checked = e.target.checked;
+                              setEditForm((prev) => {
+                                const inv =
+                                  parseFloat(prev.invested_amount) ||
+                                  (parseFloat(prev.quantity) || 0) *
+                                    (parseFloat(prev.avg_price) || 0);
+                                return {
+                                  ...prev,
+                                  manual_override_buy_charge: checked,
+                                  buy_charge: checked
+                                    ? prev.buy_charge
+                                    : inv > 0
+                                    ? (inv * BUY_CHARGE_RATE).toFixed(2)
+                                    : '',
+                                };
+                              });
+                            }}
+                          />
+                          <label className='form-check-label small text-muted' htmlFor='overrideBuyCharge'>
+                            Manual override
+                          </label>
+                        </div>
+                      </div>
+                      <input
+                        type='number'
+                        step='0.01'
+                        className='form-control'
+                        value={editForm.buy_charge}
+                        disabled={!editForm.manual_override_buy_charge}
+                        onChange={(e) =>
+                          setEditForm({ ...editForm, buy_charge: e.target.value })
+                        }
+                      />
+                    </div>
+
+                    <div className='mb-3'>
+                      <label className='form-label-custom'>Lot Remarks</label>
+                      <input
+                        type='text'
+                        className='form-control'
+                        placeholder='e.g. Swing, Demerger, DIP buy'
+                        value={editForm.remarks}
+                        onChange={(e) =>
+                          setEditForm({ ...editForm, remarks: e.target.value })
+                        }
+                      />
+                    </div>
+                  </div>
+                )}
+              </div>
+              <div className='modal-footer-custom'>
+                <button
+                  type='button'
+                  className='btn btn-outline-secondary'
+                  onClick={() => setEditTarget(null)}
+                >
+                  Cancel
+                </button>
+                <button type='submit' className='btn btn-primary px-4'>
+                  Save Changes
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
 
       {/* Add Holding Modal */}
       {showAddHoldingModal && (
@@ -2021,7 +2746,7 @@ export default function PortfolioTrackerTab({ showToast }) {
                   </div>
                   <div className='mb-2'>
                     <label className='form-label small mb-1'>
-                      Scheme Name{' '}
+                      Stock Name{' '}
                       {lookupStatus.found === false
                         ? '*'
                         : '(Auto-fetched if blank)'}
@@ -2029,11 +2754,12 @@ export default function PortfolioTrackerTab({ showToast }) {
                     <input
                       type='text'
                       className='form-control'
-                      placeholder='Company Name'
-                      value={holdingForm.scheme_name}
+                      placeholder='Company / Stock Name'
+                      value={holdingForm.stock_name || holdingForm.scheme_name}
                       onChange={(e) =>
                         setHoldingForm({
                           ...holdingForm,
+                          stock_name: e.target.value,
                           scheme_name: e.target.value,
                         })
                       }
@@ -2059,7 +2785,7 @@ export default function PortfolioTrackerTab({ showToast }) {
                         className='form-check-label small'
                         htmlFor='confirmManualName'
                       >
-                        I confirm this scheme name is correct (§3
+                        I confirm this stock name is correct (§3
                         requirement)
                       </label>
                     </div>

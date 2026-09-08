@@ -61,7 +61,7 @@ export default function DividendsModal({
                   style={{ maxHeight: '350px', overflow: 'auto', paddingBottom: '1.5rem' }}
                 >
                   <table className='table table-sm table-hover table-striped align-middle mb-0 text-nowrap'>
-                    <thead className='table-light position-sticky top-0'>
+                    <thead className='table-light'>
                       <tr style={{ fontSize: '0.82rem' }}>
                         <th>Stock Symbol</th>
                         <th className='text-end'>Dividend (₹)</th>

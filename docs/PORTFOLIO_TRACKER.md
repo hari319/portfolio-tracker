@@ -45,6 +45,8 @@ Following the architecture principle *"Store inputs, compute derivatives"*, only
    - `portfolio_name`: References `portfolio(name)`
    - `symbol`: Uppercase ticker (e.g. `TATAGOLD`, `RELIANCE.NS`)
    - `scheme_name`: Auto-fetched company name or manually confirmed text
+   - `stock_name`: Official company name auto-resolved via ticker lookup (or manually confirmed)
+   - `name_confirmed`: Boolean flag (`1`/`0`) indicating whether the stock name has been verified via lookup or explicit user confirmation
    - `person`: For `LOAN` portfolio (`MADI` | `BAPA`)
    - `app`: Origin platform/account (e.g. `Kite`, `Kite Madi`, `Kite Bapa`)
    - `remarks`: User tags (e.g. `ETF`, `Swing Self`, `PEAD`)
@@ -76,6 +78,13 @@ Following the architecture principle *"Store inputs, compute derivatives"*, only
    - `key`: Identifier (e.g. `loan_amount`, `current_mf_invest`, `current_mf_redeem`)
    - `value`: Real numeric value
    - `label`: Human-readable display label
+
+### 2.2 Ticker Lookup & Name Validation
+
+To prevent invalid or mismatched stock data, ticker entry across all modals (**Add Holding**, **Edit Holding**, and **Edit Sold Position**) is standardized via a shared lookup hook (`useTickerLookup`):
+- **User provides only the ticker**: Entering or modifying the ticker triggers an automatic lookup against the live quoting engine (`/api/portfolio-tracker/lookup-ticker`).
+- **Automatic Stock Name Population**: When recognized, the official company name is fetched and populated automatically.
+- **Clear Error Surfacing**: If a ticker is invalid, delisted, or unrecognized, a warning alert is immediately displayed. The user must either correct the ticker or enter a manual company name and explicitly check the confirmation checkbox (`name_confirmed`) before saving.
 
 ---
 
@@ -138,7 +147,47 @@ Available on the `LOAN` portfolio to track capital deployment, loan payoff, and 
   - Safe against duplicate insertions: requires explicit confirmation before replacing existing data.
   - Automatically merges multi-buy rows into aggregated holdings with child lots.
   - Flags and preserves manual override entries (e.g. advisory deductions, custom notes).
+  - *Note*: The UI "Import Sheet" button is temporarily hidden (see §7).
 - **Export (`/api/portfolio-tracker/export`)**:
-  - Re-generates a byte-compatible XLSX workbook with tabs `Stock Madi`, `Stock Bapa`, and `Loan `.
-  - Recreates exact headers, stacked vs side-by-side layouts, formatted numbers, totals rows, and the Loan summary panel.
-  - Guarantees complete round-trip fidelity.
+  - Two export operations available in the UI action bar:
+    - **`Excel (All)`**: Generates a consolidated workbook containing all three portfolio tabs (`Stock Madi`, `Stock Bapa`, `Loan `).
+    - **`{activePortfolio} (.xlsx)`**: Generates a single `.xlsx` workbook containing only the currently active portfolio tab (`Stock Madi`, `Stock Bapa`, or `Loan `).
+  - Both export options faithfully cover Open Holdings, Sold Positions, and Dividends. For `Loan `, the Balance Sheet Summary Panel (Cols 39–40) is included.
+  - Generates byte-compatible XLSX workbooks matching the layout and column structure of `Invest.xlsx` (including the `Current Date` column in exported sheets for 100% round-trip fidelity).
+  - In the native desktop shell (`pywebview`), downloads are enabled via `webview.settings["ALLOW_DOWNLOADS"] = True` in `app.py` and `show_window.py`, prompting a native Windows Save File dialog.
+
+---
+
+## 7. Temporarily Hidden UI Controls & Re-enabling Guide
+
+To streamline the user interface, certain controls and columns have been temporarily hidden in the UI without deleting any underlying backend, API, or computation logic:
+
+### 7.1 Hidden Elements
+1. **"Import Sheet" button**:
+   - **Location**: Top action bar of the Portfolio Tracker tab.
+   - **Status**: Hidden in UI. The modal, file upload pipeline, atomic database ingestion, and `/api/portfolio-tracker/import` backend logic remain completely functional.
+2. **"Current Date" column in Open Holdings**:
+   - **Location**: Open Holdings table (`<th>Current Date</th>` and respective cells in parent and child lot rows).
+   - **Status**: Hidden in UI. All holding duration metrics ($Y$ years, $M$ months) continue to calculate accurately against today's date in real time. The exported `.xlsx` workbook retains the `Current Date` column to maintain full structure parity with `Invest.xlsx`.
+
+### 7.2 Instructions to Re-enable / Unhide
+Both elements are controlled by clean boolean feature flags located at the top of [frontend/src/components/PortfolioTrackerTab.jsx](../frontend/src/components/PortfolioTrackerTab.jsx):
+
+```javascript
+// Feature flags for temporarily hidden UI elements (see docs/PORTFOLIO_TRACKER.md §7)
+// Set either flag to true to re-enable the respective control in the UI
+const SHOW_IMPORT_BUTTON = false;
+const SHOW_CURRENT_DATE = false;
+```
+
+To re-enable either or both elements:
+1. Open `frontend/src/components/PortfolioTrackerTab.jsx`.
+2. Toggle the desired flag(s) to `true`:
+   - To unhide the Import Sheet button: change `SHOW_IMPORT_BUTTON = false;` to `SHOW_IMPORT_BUTTON = true;`.
+   - To unhide the Current Date column: change `SHOW_CURRENT_DATE = false;` to `SHOW_CURRENT_DATE = true;`.
+3. Rebuild the frontend bundle by opening a terminal in the project root and running:
+   ```bash
+   cd frontend
+   npm run build
+   ```
+4. Restart or refresh the application. The controls will be immediately restored with automatic table alignment and column span adjustments.

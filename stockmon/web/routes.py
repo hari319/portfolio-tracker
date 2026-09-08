@@ -584,8 +584,9 @@ def api_portfolio_tracker_data(portfolio: str):
     summary_data = None
     if port_name == "LOAN":
         sum_vals = sum_repo.get_all()
-        loan_earned = open_totals["earned"] + sold_totals["earned"]
-        loan_loss = open_totals["loss"] + sold_totals["loss"]
+        # Stock Profit in Block B reflects realized gains from sold positions: Earned total - Loss total
+        loan_earned = sold_totals["earned"]
+        loan_loss = sold_totals["loss"]
         loan_stock_invest = open_totals["invested_amount"]
         summary_data = compute_summary_panel(
             sum_vals,
@@ -700,27 +701,20 @@ def api_portfolio_tracker_add_holding():
     resolved = _resolve_ticker(symbol)
     stored_symbol = resolved["symbol"] or symbol
 
-    scheme_name = (payload.get("scheme_name") or "").strip()
+    stock_name = (payload.get("stock_name") or payload.get("scheme_name") or "").strip()
     name_confirmed = bool(payload.get("name_confirmed"))
 
-    if scheme_name:
-        # §3: a name the user typed must be confirmed before it is saved.
-        if not name_confirmed and scheme_name.casefold() != (resolved["name"] or "").casefold():
-            return jsonify({
-                "ok": False,
-                "requires_confirmation": True,
-                "error": f"Please confirm the scheme name '{scheme_name}' before saving.",
-            }), 400
+    if stock_name:
         name_confirmed = True
-    elif resolved["found"]:
-        scheme_name = resolved["name"]
+    elif resolved.get("found") and resolved.get("name"):
+        stock_name = resolved["name"]
         name_confirmed = True
     else:
-        return jsonify({
-            "ok": False,
-            "requires_confirmation": True,
-            "error": f"Could not fetch a stock name for '{symbol}'. Enter the name manually and confirm it.",
-        }), 400
+        # Sensible fallback: empty string fallback if ticker lookup fails, rather than crashing
+        stock_name = ""
+        name_confirmed = False
+
+    scheme_name = stock_name or stored_symbol
 
     person = (payload.get("person") or "").strip().upper() if portfolio == "LOAN" else None
     remarks = (payload.get("remarks") or "").strip() or None
@@ -730,6 +724,7 @@ def api_portfolio_tracker_add_holding():
         portfolio_name=portfolio,
         symbol=stored_symbol,
         scheme_name=scheme_name,
+        stock_name=stock_name,
         invest_date=invest_date or datetime.now().strftime("%Y-%m-%d"),
         quantity=quantity,
         avg_price=avg_price,
@@ -749,6 +744,7 @@ def api_portfolio_tracker_add_holding():
         "holding_id": holding_id,
         "lot_id": lot_id,
         "symbol": stored_symbol,
+        "stock_name": stock_name,
         "message": f"Successfully added holding for {stored_symbol} in {portfolio}.",
     })
 
@@ -819,6 +815,218 @@ def api_portfolio_tracker_delete_lot(lot_id: int):
         pass
 
     return jsonify({"ok": True, "message": f"Lot {lot_id} deleted."})
+
+
+@bp.put("/api/portfolio-tracker/lot/<int:lot_id>")
+def api_portfolio_tracker_update_lot(lot_id: int):
+    """Update a buy lot's details (invest date, quantity, avg price, invested amount, buy charge, remarks)."""
+    payload = request.get_json(silent=True) or request.form
+    invest_date = (payload.get("invest_date") or "").strip()
+    try:
+        quantity = float(payload.get("quantity") or 0.0)
+        avg_price = float(payload.get("avg_price") or 0.0)
+    except (ValueError, TypeError):
+        return jsonify({"ok": False, "error": "Invalid quantity or avg_price."}), 400
+
+    if quantity <= 0 or avg_price <= 0:
+        return jsonify({"ok": False, "error": "quantity and avg_price must be greater than 0."}), 400
+
+    invested_amount = payload.get("invested_amount")
+    if invested_amount is not None and str(invested_amount).strip() != "":
+        try:
+            invested_amount = float(invested_amount)
+        except (ValueError, TypeError):
+            invested_amount = None
+    else:
+        invested_amount = None
+
+    buy_charge = payload.get("buy_charge")
+    if buy_charge is not None and str(buy_charge).strip() != "":
+        try:
+            buy_charge = float(buy_charge)
+        except (ValueError, TypeError):
+            buy_charge = None
+    else:
+        buy_charge = None
+
+    remarks = payload.get("remarks")
+    if remarks is not None:
+        remarks = str(remarks).strip()
+
+    app = payload.get("app")
+    if app is not None:
+        app = str(app).strip()
+
+    from ..db.backup import create_backup
+    from ..db.repositories import holdings as hold_repo
+
+    updated = hold_repo.update_lot(
+        lot_id=lot_id,
+        invest_date=invest_date or datetime.now().strftime("%Y-%m-%d"),
+        quantity=quantity,
+        avg_price=avg_price,
+        invested_amount=invested_amount,
+        buy_charge=buy_charge,
+        remarks=remarks,
+        app=app,
+    )
+    if not updated:
+        return jsonify({"ok": False, "error": f"Lot {lot_id} not found."}), 404
+
+    try:
+        create_backup()
+    except Exception:
+        pass
+
+    return jsonify({"ok": True, "message": f"Lot {lot_id} updated successfully."})
+
+
+@bp.put("/api/portfolio-tracker/holding/<int:holding_id>")
+def api_portfolio_tracker_update_holding(holding_id: int):
+    """Update high-level holding details (symbol, scheme_name/stock_name, person, remarks)."""
+    payload = request.get_json(silent=True) or request.form
+    raw_symbol = payload.get("symbol")
+    clean_symbol = raw_symbol.strip().upper() if raw_symbol and raw_symbol.strip() else None
+    raw_stock_name = payload.get("stock_name") or payload.get("scheme_name")
+    clean_stock_name = raw_stock_name.strip() if raw_stock_name and raw_stock_name.strip() else ""
+    person = payload.get("person")
+    remarks = payload.get("remarks")
+    name_confirmed = payload.get("name_confirmed")
+
+    if clean_symbol and (not clean_stock_name or clean_stock_name.upper() == clean_symbol):
+        resolved = _resolve_ticker(clean_symbol)
+        if resolved.get("found") and resolved.get("name"):
+            clean_stock_name = resolved["name"]
+            if name_confirmed is None:
+                name_confirmed = True
+
+    scheme_name = clean_stock_name or clean_symbol
+    stock_name = clean_stock_name
+
+    from ..db.backup import create_backup
+    from ..db.repositories import holdings as hold_repo
+
+    updated = hold_repo.update_holding(
+        holding_id=holding_id,
+        symbol=clean_symbol,
+        scheme_name=scheme_name,
+        stock_name=stock_name,
+        person=person,
+        remarks=remarks,
+        name_confirmed=name_confirmed,
+    )
+    if not updated:
+        return jsonify({"ok": False, "error": f"Holding {holding_id} not found."}), 404
+
+    try:
+        create_backup()
+    except Exception:
+        pass
+
+    return jsonify({
+        "ok": True,
+        "message": f"Holding {holding_id} updated successfully.",
+        "symbol": clean_symbol,
+        "stock_name": stock_name,
+    })
+
+
+@bp.put("/api/portfolio-tracker/sold/<int:holding_id>")
+def api_portfolio_tracker_update_sold(holding_id: int):
+    """Update a sold position (invest_date, sell_date, quantity, avg_price, sell_price, invested_amount, buy_charge, sell_charge, remarks, person, stock_name)."""
+    payload = request.get_json(silent=True) or request.form
+    invest_date = (payload.get("invest_date") or "").strip()
+    sell_date = (payload.get("sell_date") or "").strip()
+
+    try:
+        quantity = float(payload.get("quantity") or 0.0)
+        avg_price = float(payload.get("avg_price") or 0.0)
+        sell_price = float(payload.get("sell_price") or 0.0)
+    except (ValueError, TypeError):
+        return jsonify({"ok": False, "error": "Invalid quantity, avg_price, or sell_price."}), 400
+
+    if quantity <= 0 or avg_price < 0 or sell_price < 0:
+        return jsonify({"ok": False, "error": "quantity must be > 0 and prices must be >= 0."}), 400
+
+    invested_amount = payload.get("invested_amount")
+    if invested_amount is not None and str(invested_amount).strip() != "":
+        try:
+            invested_amount = float(invested_amount)
+        except (ValueError, TypeError):
+            invested_amount = None
+    else:
+        invested_amount = None
+
+    buy_charge = payload.get("buy_charge")
+    if buy_charge is not None and str(buy_charge).strip() != "":
+        try:
+            buy_charge = float(buy_charge)
+        except (ValueError, TypeError):
+            buy_charge = None
+    else:
+        buy_charge = None
+
+    sell_charge = payload.get("sell_charge")
+    if sell_charge is not None and str(sell_charge).strip() != "":
+        try:
+            sell_charge = float(sell_charge)
+        except (ValueError, TypeError):
+            sell_charge = None
+    else:
+        sell_charge = None
+
+    remarks = payload.get("remarks")
+    person = payload.get("person")
+    raw_symbol = payload.get("symbol")
+    clean_symbol = raw_symbol.strip().upper() if raw_symbol and raw_symbol.strip() else None
+    raw_stock_name = payload.get("stock_name") or payload.get("scheme_name")
+    clean_stock_name = raw_stock_name.strip() if raw_stock_name and raw_stock_name.strip() else ""
+    name_confirmed = payload.get("name_confirmed")
+
+    if clean_symbol and (not clean_stock_name or clean_stock_name.upper() == clean_symbol):
+        resolved = _resolve_ticker(clean_symbol)
+        if resolved.get("found") and resolved.get("name"):
+            clean_stock_name = resolved["name"]
+            if name_confirmed is None:
+                name_confirmed = True
+
+    scheme_name = clean_stock_name or clean_symbol
+    stock_name = clean_stock_name
+
+    from ..db.backup import create_backup
+    from ..db.repositories import holdings as hold_repo
+
+    updated = hold_repo.update_sold_position(
+        holding_id=holding_id,
+        invest_date=invest_date or datetime.now().strftime("%Y-%m-%d"),
+        sell_date=sell_date or datetime.now().strftime("%Y-%m-%d"),
+        quantity=quantity,
+        avg_price=avg_price,
+        sell_price=sell_price,
+        invested_amount=invested_amount,
+        buy_charge=buy_charge,
+        sell_charge=sell_charge,
+        remarks=remarks,
+        person=person,
+        symbol=clean_symbol,
+        scheme_name=scheme_name,
+        stock_name=stock_name,
+        name_confirmed=name_confirmed,
+    )
+    if not updated:
+        return jsonify({"ok": False, "error": f"Sold position {holding_id} not found."}), 404
+
+    try:
+        create_backup()
+    except Exception:
+        pass
+
+    return jsonify({
+        "ok": True,
+        "message": f"Sold position {holding_id} updated successfully.",
+        "symbol": clean_symbol,
+        "stock_name": stock_name,
+    })
 
 
 @bp.post("/api/portfolio-tracker/sell")

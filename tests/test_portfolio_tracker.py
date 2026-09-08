@@ -105,7 +105,8 @@ def test_totals_row():
     ]
     totals = compute_totals(rows)
     assert totals["invested_amount"] == 1500.0
-    assert totals["net_profit"] == 100.0
+    # Net profit = Earned total (195.0) - Loss total (101.0) = 94.0
+    assert totals["net_profit"] == 94.0
 
 
 def _seed_round_trip_data():
@@ -285,7 +286,7 @@ def test_csv_export(clean_tracker):
     export_csv(buf, portfolio="MADI")
     text = buf.getvalue().decode("utf-8")
     assert "Portfolio Tracker — MADI" in text
-    assert "Section,Scheme,Invest Date" in text
+    assert "Section,StockTicker,StockName,Invest Date" in text
 
 
 def test_sold_ordering_recent_first(clean_tracker):
@@ -303,5 +304,28 @@ def test_sold_ordering_recent_first(clean_tracker):
     assert len(sold) == 3
     # Most recent sell date on top
     assert [r["sell_date"] for r in sold] == ["2024-11-20", "2024-03-01", "2023-05-15"]
+
+
+def test_block_b_stock_profit_sold_positions_only():
+    """Verify that compute_summary_panel stock_profit equals sold positions net profit."""
+    sold_earned = 15000.0
+    sold_loss = -3000.0
+    panel = compute_summary_panel(
+        {
+            "current_stock_etf_invest": 100000.0,
+            "current_mf_invest": 50000.0,
+            "current_mf_redeem": 20000.0,
+            "loan_amount": 200000.0,
+            "current_mf_redeem_profit": 5000.0,
+        },
+        loan_earned=sold_earned,
+        loan_loss=sold_loss,
+        loan_dividends=1000.0,
+    )
+    # stock_profit = 15000.0 + (-3000.0) = 12000.0
+    assert panel["block_b"]["stock_profit"] == 12000.0
+    assert panel["block_b"]["sold_earned"] == 15000.0
+    assert panel["block_b"]["sold_loss"] == -3000.0
+
 
 

@@ -56,12 +56,28 @@ def _v3_invested_amount(conn: sqlite3.Connection) -> None:
         pass
 
 
+def _v4_stock_name(conn: sqlite3.Connection) -> None:
+    """Add stock_name to holding table and backfill from scheme_name."""
+    try:
+        conn.execute("ALTER TABLE holding ADD COLUMN stock_name TEXT")
+    except Exception:
+        pass
+    try:
+        conn.execute(
+            "UPDATE holding SET stock_name = scheme_name "
+            "WHERE (stock_name IS NULL OR stock_name = '') AND scheme_name IS NOT NULL AND scheme_name != ''"
+        )
+    except Exception:
+        pass
+
+
 # Append-only list: (version_number, callable).
 # NEVER edit or renumber a shipped migration.
 MIGRATIONS: list[tuple[int, callable]] = [
     (1, _v1_initial_schema),
     (2, _v2_portfolio_tracker),
     (3, _v3_invested_amount),
+    (4, _v4_stock_name),
 ]
 
 

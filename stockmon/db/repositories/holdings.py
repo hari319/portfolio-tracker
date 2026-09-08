@@ -65,18 +65,20 @@ def split_existing_multi_lot_sold_holdings() -> None:
                 l_inv = float(lot["invested_amount"]) if lot["invested_amount"] is not None else round(l_qty * l_price, 4)
                 l_sc = round(tot_sc * (l_qty / tot_q), 4) if (tot_sc is not None and tot_q > 0) else None
 
+                holding_stock_name = holding["stock_name"] if ("stock_name" in holding.keys() and holding["stock_name"]) else holding["scheme_name"]
                 cur = conn.execute(
                     """
                     INSERT INTO holding (
-                        portfolio_name, symbol, scheme_name, name_confirmed,
+                        portfolio_name, symbol, scheme_name, stock_name, name_confirmed,
                         person, app, remarks, bought_reason, sold_reason,
                         mistake_learned, status, created_at, updated_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'sold', ?, ?)
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'sold', ?, ?)
                     """,
                     (
                         holding["portfolio_name"],
                         holding["symbol"],
                         holding["scheme_name"],
+                        holding_stock_name,
                         holding["name_confirmed"],
                         holding["person"],
                         holding["app"],
@@ -157,6 +159,7 @@ def list_holdings(portfolio_name: str, status: str = "open") -> list[dict[str, A
                 h.portfolio_name,
                 h.symbol,
                 h.scheme_name,
+                COALESCE(h.stock_name, h.scheme_name, '') AS stock_name,
                 h.name_confirmed,
                 h.person,
                 h.app,
@@ -196,6 +199,7 @@ def list_holdings(portfolio_name: str, status: str = "open") -> list[dict[str, A
             h.portfolio_name,
             h.symbol,
             h.scheme_name,
+            COALESCE(h.stock_name, h.scheme_name, '') AS stock_name,
             h.name_confirmed,
             h.person,
             h.app,
@@ -264,10 +268,10 @@ def get_lots(holding_id: int) -> list[dict[str, Any]]:
 def add_holding(
     portfolio_name: str,
     symbol: str,
-    scheme_name: str,
-    invest_date: str,
-    quantity: float,
-    avg_price: float,
+    scheme_name: str | None = None,
+    invest_date: str = "",
+    quantity: float = 0.0,
+    avg_price: float = 0.0,
     person: str | None = None,
     remarks: str | None = None,
     app: str | None = None,
@@ -276,6 +280,7 @@ def add_holding(
     bought_reason: str | None = None,
     status: str = "open",
     invested_amount: float | None = None,
+    stock_name: str | None = None,
 ) -> tuple[int, int]:
     """Add a holding and its initial buy lot.
 
@@ -286,7 +291,8 @@ def add_holding(
     conn = get_connection()
     now = _utc_now_iso()
     symbol = symbol.strip().upper()
-    scheme_name = scheme_name.strip() or symbol
+    resolved_stock_name = (stock_name or scheme_name or symbol).strip()
+    resolved_scheme_name = (scheme_name or stock_name or symbol).strip()
 
     conn.execute("BEGIN IMMEDIATE")
     try:
@@ -303,15 +309,16 @@ def add_holding(
             cur = conn.execute(
                 """
                 INSERT INTO holding (
-                    portfolio_name, symbol, scheme_name, name_confirmed,
+                    portfolio_name, symbol, scheme_name, stock_name, name_confirmed,
                     person, app, remarks, bought_reason, status,
                     created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     portfolio_name,
                     symbol,
-                    scheme_name,
+                    resolved_scheme_name,
+                    resolved_stock_name,
                     1 if name_confirmed else 0,
                     person,
                     app,
@@ -432,6 +439,164 @@ def delete_lot(lot_id: int) -> bool:
         raise
 
 
+def get_lot(lot_id: int) -> dict[str, Any] | None:
+    """Fetch a single buy lot by ID."""
+    conn = get_connection()
+    row = conn.execute("SELECT * FROM buy_lot WHERE id = ?", (lot_id,)).fetchone()
+    return dict(row) if row else None
+
+
+def update_lot(
+    lot_id: int,
+    invest_date: str,
+    quantity: float,
+    avg_price: float,
+    invested_amount: float | None = None,
+    buy_charge: float | None = None,
+    remarks: str | None = None,
+    app: str | None = None,
+) -> bool:
+    """Update values for an individual buy lot."""
+    conn = get_connection()
+    now = _utc_now_iso()
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        lot = conn.execute("SELECT holding_id FROM buy_lot WHERE id = ?", (lot_id,)).fetchone()
+        if not lot:
+            conn.execute("ROLLBACK")
+            return False
+        holding_id = lot["holding_id"]
+        conn.execute(
+            """
+            UPDATE buy_lot
+            SET invest_date = ?, quantity = ?, avg_price = ?,
+                invested_amount = ?, buy_charge = ?, remarks = ?,
+                app = COALESCE(?, app)
+            WHERE id = ?
+            """,
+            (invest_date, quantity, avg_price, invested_amount, buy_charge, remarks, app, lot_id),
+        )
+        conn.execute(
+            "UPDATE holding SET updated_at = ? WHERE id = ?",
+            (now, holding_id),
+        )
+        conn.execute("COMMIT")
+        return True
+    except Exception:
+        conn.execute("ROLLBACK")
+        raise
+
+
+def update_holding(
+    holding_id: int,
+    symbol: str | None = None,
+    scheme_name: str | None = None,
+    person: str | None = None,
+    remarks: str | None = None,
+    stock_name: str | None = None,
+    name_confirmed: bool | None = None,
+) -> bool:
+    """Update high-level metadata for an open holding."""
+    conn = get_connection()
+    now = _utc_now_iso()
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        holding = conn.execute("SELECT * FROM holding WHERE id = ?", (holding_id,)).fetchone()
+        if not holding:
+            conn.execute("ROLLBACK")
+            return False
+        curr_stock_name = holding["stock_name"] if ("stock_name" in holding.keys() and holding["stock_name"]) else holding["scheme_name"]
+        new_symbol = symbol.strip().upper() if symbol is not None and symbol.strip() else holding["symbol"]
+        new_stock = stock_name.strip() if stock_name is not None and stock_name.strip() else (scheme_name.strip() if scheme_name is not None and scheme_name.strip() else curr_stock_name)
+        new_scheme = scheme_name.strip() if scheme_name is not None and scheme_name.strip() else new_stock
+        new_person = person.strip().upper() if person is not None else holding["person"]
+        new_remarks = remarks.strip() if remarks is not None else holding["remarks"]
+        new_confirmed = int(name_confirmed) if name_confirmed is not None else holding["name_confirmed"]
+        conn.execute(
+            """
+            UPDATE holding
+            SET symbol = ?, scheme_name = ?, stock_name = ?, person = ?, remarks = ?, name_confirmed = ?, updated_at = ?
+            WHERE id = ?
+            """,
+            (new_symbol, new_scheme, new_stock, new_person, new_remarks, new_confirmed, now, holding_id),
+        )
+        conn.execute("COMMIT")
+        return True
+    except Exception:
+        conn.execute("ROLLBACK")
+        raise
+
+
+def update_sold_position(
+    holding_id: int,
+    invest_date: str,
+    sell_date: str,
+    quantity: float,
+    avg_price: float,
+    sell_price: float,
+    invested_amount: float | None = None,
+    buy_charge: float | None = None,
+    sell_charge: float | None = None,
+    remarks: str | None = None,
+    person: str | None = None,
+    symbol: str | None = None,
+    scheme_name: str | None = None,
+    stock_name: str | None = None,
+    name_confirmed: bool | None = None,
+) -> bool:
+    """Update values for a sold position (holding, buy_lot, and sale records)."""
+    conn = get_connection()
+    now = _utc_now_iso()
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        holding = conn.execute("SELECT * FROM holding WHERE id = ? AND status = 'sold'", (holding_id,)).fetchone()
+        if not holding:
+            conn.execute("ROLLBACK")
+            return False
+
+        curr_stock_name = holding["stock_name"] if ("stock_name" in holding.keys() and holding["stock_name"]) else holding["scheme_name"]
+        new_symbol = symbol.strip().upper() if symbol is not None and symbol.strip() else holding["symbol"]
+        new_stock = stock_name.strip() if stock_name is not None and stock_name.strip() else (scheme_name.strip() if scheme_name is not None and scheme_name.strip() else curr_stock_name)
+        new_scheme = scheme_name.strip() if scheme_name is not None and scheme_name.strip() else new_stock
+        new_person = person.strip().upper() if person is not None else holding["person"]
+        new_confirmed = int(name_confirmed) if name_confirmed is not None else holding["name_confirmed"]
+
+        conn.execute(
+            """
+            UPDATE holding
+            SET symbol = ?, scheme_name = ?, stock_name = ?, person = ?, remarks = ?, name_confirmed = ?, updated_at = ?
+            WHERE id = ?
+            """,
+            (new_symbol, new_scheme, new_stock, new_person, remarks, new_confirmed, now, holding_id),
+        )
+
+        conn.execute(
+            """
+            UPDATE buy_lot
+            SET invest_date = ?, quantity = ?, avg_price = ?,
+                invested_amount = ?, buy_charge = ?, remarks = ?
+            WHERE holding_id = ?
+            """,
+            (invest_date, quantity, avg_price, invested_amount, buy_charge, remarks, holding_id),
+        )
+
+        conn.execute(
+            """
+            UPDATE sale
+            SET sell_date = ?, quantity = ?, sell_price = ?,
+                sell_charge = ?, remarks = ?
+            WHERE holding_id = ?
+            """,
+            (sell_date, quantity, sell_price, sell_charge, remarks, holding_id),
+        )
+
+        conn.execute("COMMIT")
+        return True
+    except Exception:
+        conn.execute("ROLLBACK")
+        raise
+
+
 def sell_holding(
     holding_id: int,
     sell_date: str,
@@ -487,18 +652,20 @@ def sell_holding(
             take_sc = round(float(sell_charge) * (take_qty / sell_total), 4) if sell_charge is not None else None
 
             # Create individual sold holding for this tranche
+            holding_stock_name = holding["stock_name"] if ("stock_name" in holding.keys() and holding["stock_name"]) else holding["scheme_name"]
             sold_cur = conn.execute(
                 """
                 INSERT INTO holding (
-                    portfolio_name, symbol, scheme_name, name_confirmed,
+                    portfolio_name, symbol, scheme_name, stock_name, name_confirmed,
                     person, app, remarks, bought_reason, sold_reason,
                     mistake_learned, status, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'sold', ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'sold', ?, ?)
                 """,
                 (
                     holding["portfolio_name"],
                     holding["symbol"],
                     holding["scheme_name"],
+                    holding_stock_name,
                     holding["name_confirmed"],
                     holding["person"],
                     holding["app"],

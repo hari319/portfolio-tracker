@@ -25,7 +25,8 @@ for k, v in SHEET_NAMES.items():
 
 # Standard column headers in the spreadsheet
 HOLDING_COLUMNS = [
-    "Scheme",
+    "StockTicker",
+    "StockName",
     "Invest Date",
     "Current Date",
     "Y",
@@ -49,14 +50,15 @@ DIVIDEND_COLUMNS = ["Stock", "Divi", "Term"]
 
 # Section markers used to locate blocks on a sheet without relying on row numbers,
 # so an exported workbook (whose rows shift with the data) re-imports correctly.
-HOLDINGS_HEADER_LABEL = "scheme"
+HOLDINGS_HEADER_LABEL = "stockticker"
+HOLDINGS_HEADER_LABELS = ("stockticker", "scheme")
 SOLD_SECTION_LABELS = ("sold", "stock sold")
 DIVIDEND_SECTION_LABEL = "dividend"
 DIVIDEND_HEADER_LABEL = "stock"
 TOTAL_ROW_LABEL = "total"
 
 # Column holding the Sold block: MADI stacks it below Holdings, the others sit side-by-side.
-SOLD_START_COLUMN = {"MADI": 1, "BAPA": 20, "LOAN": 20}
+SOLD_START_COLUMN = {"MADI": 1, "BAPA": 21, "LOAN": 21}
 
 # Row numbers from the original Invest.xlsx (docs/SHEET_FORMAT.md §3).
 # Only used when the markers above cannot be found on a sheet.
@@ -66,9 +68,9 @@ FALLBACK_LAYOUT = {
     "LOAN": {"holdings_start": 3, "sold_start": 3, "dividend_start": 298},
 }
 
-# Summary panel columns on the Loan sheet (AM = label, AN = value).
-SUMMARY_LABEL_COLUMN = 39
-SUMMARY_VALUE_COLUMN = 40
+# Summary panel columns on the Loan sheet (AO = label, AP = value).
+SUMMARY_LABEL_COLUMN = 41
+SUMMARY_VALUE_COLUMN = 42
 
 # Loan sheet Summary Panel items (Cols 39-40, rows 76-87 in Loan sheet)
 SUMMARY_PANEL_CONFIG = [

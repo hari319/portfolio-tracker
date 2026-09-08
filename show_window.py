@@ -83,6 +83,8 @@ def main() -> None:
 
     import webview  # lazy import so the dependency is only needed when showing a window
 
+    webview.settings["ALLOW_DOWNLOADS"] = True
+
     ensure_directories()
     configure_logging(APP_LOG_FILE)
     logger = logging.getLogger("stockmon.show_window")

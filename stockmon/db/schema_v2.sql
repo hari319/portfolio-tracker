@@ -12,6 +12,7 @@ CREATE TABLE IF NOT EXISTS holding (
     portfolio_name  TEXT NOT NULL REFERENCES portfolio(name) ON DELETE CASCADE,
     symbol          TEXT NOT NULL,
     scheme_name     TEXT NOT NULL,
+    stock_name      TEXT,
     name_confirmed  INTEGER NOT NULL DEFAULT 0,
     person          TEXT,                                  -- 'MADI' | 'BAPA' (LOAN only)
     app             TEXT,                                  -- e.g. 'Kite', 'Kite Madi', 'Kite Bapa'
