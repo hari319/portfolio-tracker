@@ -527,6 +527,109 @@ def update_holding(
         raise
 
 
+def swap_holdings(
+    holding_ids: list[int],
+    target_portfolio: str,
+    target_person: str | None = None,
+) -> dict[str, Any]:
+    """Move one or more open holdings to a different portfolio (MADI, BAPA, or LOAN).
+
+    If target_portfolio is 'LOAN', target_person ('MADI' or 'BAPA') is required.
+    If the target portfolio already contains an open holding for the same symbol,
+    the buy lots from the swapped holding are re-parented into the existing target
+    holding, and the source holding is deleted so that the unique constraint
+    idx_holding_unique_open is cleanly satisfied without conflict.
+    """
+    from ...errors import ValidationError
+
+    clean_target = (target_portfolio or "").strip().upper()
+    if clean_target not in ("LOAN", "MADI", "BAPA"):
+        raise ValidationError(f"Target portfolio must be one of LOAN, MADI, BAPA (got '{target_portfolio}').")
+
+    clean_person: str | None = None
+    if clean_target == "LOAN":
+        clean_person = (target_person or "").strip().upper()
+        if clean_person not in ("MADI", "BAPA"):
+            raise ValidationError("When swapping to LOAN, a person ('MADI' or 'BAPA') must be specified.")
+    else:
+        # Personal portfolios (MADI, BAPA) don't use person
+        clean_person = None
+
+    if not holding_ids:
+        raise ValidationError("No holdings selected to swap.")
+
+    conn = get_connection()
+    now = _utc_now_iso()
+
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        swapped_count = 0
+        merged_count = 0
+        affected_symbols = []
+
+        for hid in holding_ids:
+            row = conn.execute("SELECT * FROM holding WHERE id = ?", (hid,)).fetchone()
+            if not row:
+                raise ValidationError(f"Holding with ID {hid} not found.")
+
+            curr_portfolio = row["portfolio_name"].strip().upper()
+            curr_person = (row["person"] or "").strip().upper() if row["person"] else None
+            symbol = row["symbol"].strip().upper()
+            affected_symbols.append(symbol)
+
+            # If already in the target portfolio and (if LOAN) with same person, skip
+            if curr_portfolio == clean_target:
+                if clean_target != "LOAN" or curr_person == clean_person:
+                    continue
+
+            # Check if destination already has an open holding for this symbol
+            dest_existing = conn.execute(
+                "SELECT id FROM holding WHERE portfolio_name = ? AND symbol = ? AND status = 'open'",
+                (clean_target, symbol),
+            ).fetchone()
+
+            if dest_existing and dest_existing["id"] != hid:
+                dest_id = dest_existing["id"]
+                # Re-parent buy lots to the existing holding in destination
+                conn.execute(
+                    "UPDATE buy_lot SET holding_id = ? WHERE holding_id = ?",
+                    (dest_id, hid),
+                )
+                # Update timestamp on destination
+                conn.execute(
+                    "UPDATE holding SET updated_at = ? WHERE id = ?",
+                    (now, dest_id),
+                )
+                # Delete source holding container
+                conn.execute("DELETE FROM holding WHERE id = ?", (hid,))
+                merged_count += 1
+            else:
+                # Update portfolio_name and person
+                conn.execute(
+                    """
+                    UPDATE holding
+                    SET portfolio_name = ?, person = ?, updated_at = ?
+                    WHERE id = ?
+                    """,
+                    (clean_target, clean_person, now, hid),
+                )
+                swapped_count += 1
+
+        conn.execute("COMMIT")
+        return {
+            "ok": True,
+            "swapped_count": swapped_count,
+            "merged_count": merged_count,
+            "total_processed": swapped_count + merged_count,
+            "target_portfolio": clean_target,
+            "target_person": clean_person,
+            "symbols": affected_symbols,
+        }
+    except Exception:
+        conn.execute("ROLLBACK")
+        raise
+
+
 def update_sold_position(
     holding_id: int,
     invest_date: str,

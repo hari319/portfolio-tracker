@@ -8,6 +8,7 @@ export default function PortfolioTable({
   periods = [9, 21, 50, 100, 200],
   onRemoveTicker,
   disabled = false,
+  searchQuery = '',
 }) {
   const sortedRows = React.useMemo(() => {
     if (!rows || rows.length === 0) return [];
@@ -23,7 +24,11 @@ export default function PortfolioTable({
   if (!sortedRows || sortedRows.length === 0) {
     return (
       <div className="p-4 text-center text-muted">
-        No tickers in <strong>{portfolioName}</strong> yet — add one using the form above.
+        {searchQuery ? (
+          <>No tickers matching &ldquo;{searchQuery}&rdquo; in <strong>{portfolioName}</strong>.</>
+        ) : (
+          <>No tickers in <strong>{portfolioName}</strong> yet — add one using the form above.</>
+        )}
       </div>
     );
   }

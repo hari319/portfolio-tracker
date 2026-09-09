@@ -107,6 +107,7 @@ def main() -> None:
         width=1200,
         height=800,
         on_top=True,
+        text_select=True,
     )
     webview.start()
 

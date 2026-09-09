@@ -84,6 +84,7 @@ def main() -> None:
             f"http://{args.host}:{args.port}",
             width=1200,
             height=800,
+            text_select=True,
         )
         webview.start()
 

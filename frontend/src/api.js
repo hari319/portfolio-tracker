@@ -235,6 +235,10 @@ export async function sellPortfolioHolding(data) {
   return sendJson('/api/portfolio-tracker/sell', 'POST', data);
 }
 
+export async function swapPortfolioHoldings(data) {
+  return sendJson('/api/portfolio-tracker/swap', 'POST', data);
+}
+
 export async function updatePortfolioNotes(holdingId, notes) {
   return sendJson(`/api/portfolio-tracker/notes/${holdingId}`, 'PUT', notes);
 }

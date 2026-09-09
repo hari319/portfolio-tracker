@@ -17,6 +17,7 @@ import {
   Info,
   Search,
   X,
+  ArrowLeftRight,
 } from 'lucide-react';
 import * as api from '../api';
 import useTickerLookup from '../hooks/useTickerLookup';
@@ -91,6 +92,11 @@ export default function PortfolioTrackerTab({ showToast }) {
   const [showSummaryModal, setShowSummaryModal] = useState(false);
   const [showSoldModal, setShowSoldModal] = useState(false);
   const [showDividendsModal, setShowDividendsModal] = useState(false);
+  const [showSwapModal, setShowSwapModal] = useState(null); // array of holding objects or null
+  const [swapTargetPortfolio, setSwapTargetPortfolio] = useState('LOAN');
+  const [swapTargetPerson, setSwapTargetPerson] = useState('MADI');
+  const [isSwapping, setIsSwapping] = useState(false);
+  const [selectedHoldingIds, setSelectedHoldingIds] = useState({});
   const [editTarget, setEditTarget] = useState(null); // { holding, lot, isSingleEntry, isHoldingOnly }
 
   // Forms state
@@ -217,6 +223,7 @@ export default function PortfolioTrackerTab({ showToast }) {
   };
 
   useEffect(() => {
+    setSelectedHoldingIds({});
     loadPortfolioData(activePortfolio);
   }, [activePortfolio, loadPortfolioData]);
 
@@ -730,6 +737,76 @@ export default function PortfolioTrackerTab({ showToast }) {
     });
   }, [sortedOpenHoldings, searchQuery]);
 
+  const selectedCount = useMemo(
+    () => Object.values(selectedHoldingIds).filter(Boolean).length,
+    [selectedHoldingIds],
+  );
+
+  const isAllSelected =
+    filteredOpenHoldings.length > 0 &&
+    filteredOpenHoldings.every((h) => selectedHoldingIds[h.id]);
+
+  const handleToggleSelectAll = (e) => {
+    const checked = e.target.checked;
+    setSelectedHoldingIds((prev) => {
+      const next = { ...prev };
+      filteredOpenHoldings.forEach((h) => {
+        if (checked) next[h.id] = true;
+        else delete next[h.id];
+      });
+      return next;
+    });
+  };
+
+  const handleToggleSelectHolding = (id) => {
+    setSelectedHoldingIds((prev) => {
+      const next = { ...prev };
+      if (next[id]) delete next[id];
+      else next[id] = true;
+      return next;
+    });
+  };
+
+  const openSwapModal = (targetHoldings) => {
+    if (!targetHoldings || targetHoldings.length === 0) return;
+    const currentPort = activePortfolio.toUpperCase();
+    const defaultTarget = currentPort === 'LOAN' ? 'MADI' : 'LOAN';
+    setSwapTargetPortfolio(defaultTarget);
+    const firstPerson = targetHoldings[0]?.person;
+    setSwapTargetPerson(firstPerson === 'BAPA' ? 'BAPA' : 'MADI');
+    setShowSwapModal(targetHoldings);
+  };
+
+  const handleConfirmSwap = async () => {
+    if (!showSwapModal || showSwapModal.length === 0) return;
+    setIsSwapping(true);
+    try {
+      const holdingIds = showSwapModal.map((h) => h.id);
+      const res = await api.swapPortfolioHoldings({
+        holding_ids: holdingIds,
+        target_portfolio: swapTargetPortfolio,
+        target_person: swapTargetPortfolio === 'LOAN' ? swapTargetPerson : null,
+      });
+
+      if (res && res.ok) {
+        showToast(res.message || 'Holding(s) swapped successfully.', false);
+        setSelectedHoldingIds((prev) => {
+          const next = { ...prev };
+          holdingIds.forEach((id) => delete next[id]);
+          return next;
+        });
+        setShowSwapModal(null);
+        await loadPortfolioData(activePortfolio);
+      } else {
+        showToast(res.error || 'Failed to swap holdings.', true);
+      }
+    } catch (err) {
+      showToast(err.message || 'Failed to swap holdings.', true);
+    } finally {
+      setIsSwapping(false);
+    }
+  };
+
   // Count total un-filtered holdings per person in LOAN
   const allLoanPersonCounts = useMemo(() => {
     if (activePortfolio !== 'LOAN') return { madi: 0, bapa: 0, other: 0 };
@@ -1004,6 +1081,14 @@ export default function PortfolioTrackerTab({ showToast }) {
         <tr className={hasMultipleLots ? 'multi-entry-row' : ''}>
           <td className='col-sticky-ticker col-sticky-scheme'>
             <div className='ticker-cell-content'>
+              <input
+                type='checkbox'
+                className='form-check-input mt-0 me-1'
+                checked={!!selectedHoldingIds[h.id]}
+                onChange={() => handleToggleSelectHolding(h.id)}
+                style={{ cursor: 'pointer', flexShrink: 0 }}
+                title={`Select ${h.symbol || h.scheme_name}`}
+              />
               <strong title={h.symbol}>{h.symbol || h.scheme_name}</strong>
               <span
                 className='stock-info-tooltip-trigger'
@@ -1186,6 +1271,14 @@ export default function PortfolioTrackerTab({ showToast }) {
                 }}
               >
                 <FileText size={13} />
+              </button>
+              <button
+                type='button'
+                className='btn btn-outline-info'
+                title='Swap Portfolio'
+                onClick={() => openSwapModal([h])}
+              >
+                <ArrowLeftRight size={13} />
               </button>
               <button
                 type='button'
@@ -1490,6 +1583,21 @@ export default function PortfolioTrackerTab({ showToast }) {
 
           {/* Action buttons with Dedicated Add Holding buttons per portfolio */}
           <div className='d-flex flex-wrap align-items-center gap-2'>
+            {selectedCount > 0 && (
+              <button
+                type='button'
+                className='btn btn-sm btn-info text-white d-flex align-items-center gap-1 shadow-sm'
+                onClick={() => {
+                  const selected = openHoldings.filter((h) => selectedHoldingIds[h.id]);
+                  if (selected.length > 0) openSwapModal(selected);
+                }}
+                title={`Swap ${selectedCount} selected holding(s) to another portfolio`}
+              >
+                <ArrowLeftRight size={14} />
+                <span>Swap Selected ({selectedCount})</span>
+              </button>
+            )}
+
             <button
               type='button'
               className='btn btn-sm btn-primary d-flex align-items-center gap-1 shadow-sm'
@@ -1562,7 +1670,19 @@ export default function PortfolioTrackerTab({ showToast }) {
           <table className='table table-hover table-striped table-sticky-tfoot align-middle mb-0 text-nowrap'>
             <thead className='table-light'>
               <tr style={{ fontSize: '0.82rem' }}>
-                <th className='col-sticky-ticker col-sticky-scheme'>StockTicker</th>
+                <th className='col-sticky-ticker col-sticky-scheme'>
+                  <div className='d-flex align-items-center gap-2'>
+                    <input
+                      type='checkbox'
+                      className='form-check-input mt-0'
+                      checked={isAllSelected}
+                      onChange={handleToggleSelectAll}
+                      style={{ cursor: 'pointer' }}
+                      title='Select all open holdings'
+                    />
+                    <span>StockTicker</span>
+                  </div>
+                </th>
                 <th>Invest Date</th>
                 {SHOW_CURRENT_DATE && <th>Current Date</th>}
                 <th
@@ -3601,6 +3721,183 @@ export default function PortfolioTrackerTab({ showToast }) {
                   </button>
                 </div>
               </form>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Swap Holding Modal */}
+      {showSwapModal && (
+        <div
+          className='modal show d-block'
+          tabIndex='-1'
+          style={{ backgroundColor: 'rgba(0,0,0,0.5)' }}
+          onClick={() => !isSwapping && setShowSwapModal(null)}
+        >
+          <div
+            className='modal-dialog modal-dialog-centered'
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className='modal-content shadow-lg border-0'>
+              <div className='modal-header border-bottom bg-light py-3 px-4'>
+                <h5 className='modal-title d-flex align-items-center gap-2 fw-bold text-dark mb-0'>
+                  <ArrowLeftRight size={18} className='text-primary' />
+                  <span>Swap Portfolio</span>
+                </h5>
+                <button
+                  type='button'
+                  className='btn-close'
+                  onClick={() => !isSwapping && setShowSwapModal(null)}
+                  aria-label='Close'
+                  disabled={isSwapping}
+                />
+              </div>
+
+              <div className='modal-body p-4'>
+                {/* Summary of Items being swapped */}
+                {showSwapModal.length === 1 ? (
+                  <div className='p-3 bg-light rounded-3 mb-3 border'>
+                    <div className='fw-bold text-dark fs-6'>
+                      {showSwapModal[0].symbol}
+                      <span className='fw-normal text-muted ms-2'>
+                        — {showSwapModal[0].stock_name || showSwapModal[0].scheme_name}
+                      </span>
+                    </div>
+                    <div className='small text-muted mt-2 d-flex flex-wrap align-items-center gap-2'>
+                      <span>Current:</span>
+                      <span className='badge bg-secondary text-uppercase'>
+                        {activePortfolio}
+                      </span>
+                      {showSwapModal[0].person && (
+                        <span className='badge bg-white text-dark border'>
+                          Person: {showSwapModal[0].person}
+                        </span>
+                      )}
+                      <span>&bull;</span>
+                      <span>Qty: <strong>{showSwapModal[0].quantity.toLocaleString()}</strong></span>
+                      <span>&bull;</span>
+                      <span>Avg: <strong>₹{showSwapModal[0].avg_price.toFixed(2)}</strong></span>
+                    </div>
+                  </div>
+                ) : (
+                  <div className='p-3 bg-light rounded-3 mb-3 border'>
+                    <div className='fw-bold text-dark mb-2'>
+                      Selected {showSwapModal.length} holdings to move from {activePortfolio}:
+                    </div>
+                    <div className='d-flex flex-wrap gap-1' style={{ maxHeight: '120px', overflowY: 'auto' }}>
+                      {showSwapModal.map((h) => (
+                        <span key={h.id} className='badge bg-white text-dark border py-1 px-2'>
+                          {h.symbol} ({h.quantity.toLocaleString()})
+                        </span>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {/* Target Portfolio Selection */}
+                <div className='mb-3'>
+                  <label className='form-label fw-bold text-dark small text-uppercase letter-spacing'>
+                    Destination Portfolio:
+                  </label>
+                  <div className='d-flex gap-3'>
+                    {['LOAN', 'MADI', 'BAPA'].map((p) => {
+                      const isCurrent = p === activePortfolio.toUpperCase();
+                      return (
+                        <div key={p} className='form-check'>
+                          <input
+                            className='form-check-input'
+                            type='radio'
+                            name='swapTargetPortfolio'
+                            id={`port-${p}`}
+                            value={p}
+                            checked={swapTargetPortfolio === p}
+                            onChange={(e) => setSwapTargetPortfolio(e.target.value)}
+                            disabled={isCurrent || isSwapping}
+                            style={{ cursor: isCurrent ? 'not-allowed' : 'pointer' }}
+                          />
+                          <label
+                            className={`form-check-label fw-semibold ${isCurrent ? 'text-muted' : 'text-dark'}`}
+                            htmlFor={`port-${p}`}
+                            style={{ cursor: isCurrent ? 'not-allowed' : 'pointer' }}
+                          >
+                            {p} {isCurrent ? '(Current)' : ''}
+                          </label>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+
+                {/* If Target is LOAN, prompt for Person (MADI or BAPA) */}
+                {swapTargetPortfolio === 'LOAN' && (
+                  <div className='mb-3 p-3 bg-primary-subtle border border-primary-subtle rounded-3'>
+                    <label className='form-label fw-bold text-primary-emphasis mb-2 small text-uppercase'>
+                      Select Person for LOAN:
+                    </label>
+                    <div className='d-flex gap-4'>
+                      {['MADI', 'BAPA'].map((person) => (
+                        <div key={person} className='form-check'>
+                          <input
+                            className='form-check-input'
+                            type='radio'
+                            name='swapTargetPerson'
+                            id={`swap-person-${person}`}
+                            value={person}
+                            checked={swapTargetPerson === person}
+                            onChange={(e) => setSwapTargetPerson(e.target.value)}
+                            disabled={isSwapping}
+                            style={{ cursor: 'pointer' }}
+                          />
+                          <label
+                            className='form-check-label fw-semibold text-dark'
+                            htmlFor={`swap-person-${person}`}
+                            style={{ cursor: 'pointer' }}
+                          >
+                            {person}
+                          </label>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {/* Merge info callout */}
+                <div className='alert alert-info py-2 px-3 small d-flex align-items-start gap-2 mb-0'>
+                  <Info size={16} className='flex-shrink-0 mt-0.5' />
+                  <span>
+                    If a selected stock already exists in the destination portfolio, its buy lots will be automatically merged into that position without losing purchase history.
+                  </span>
+                </div>
+              </div>
+
+              <div className='modal-footer border-top py-2 px-4 bg-light'>
+                <button
+                  type='button'
+                  className='btn btn-sm btn-secondary'
+                  onClick={() => setShowSwapModal(null)}
+                  disabled={isSwapping}
+                >
+                  Cancel
+                </button>
+                <button
+                  type='button'
+                  className='btn btn-sm btn-primary d-inline-flex align-items-center gap-1 shadow-sm'
+                  onClick={handleConfirmSwap}
+                  disabled={isSwapping || swapTargetPortfolio === activePortfolio.toUpperCase()}
+                >
+                  {isSwapping ? (
+                    <>
+                      <span className='spinner-border spinner-border-sm' role='status' aria-hidden='true' />
+                      <span>Swapping...</span>
+                    </>
+                  ) : (
+                    <>
+                      <ArrowLeftRight size={14} />
+                      <span>Confirm Swap</span>
+                    </>
+                  )}
+                </button>
+              </div>
             </div>
           </div>
         </div>

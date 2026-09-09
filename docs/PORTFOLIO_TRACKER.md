@@ -86,6 +86,13 @@ To prevent invalid or mismatched stock data, ticker entry across all modals (**A
 - **Automatic Stock Name Population**: When recognized, the official company name is fetched and populated automatically.
 - **Clear Error Surfacing**: If a ticker is invalid, delisted, or unrecognized, a warning alert is immediately displayed. The user must either correct the ticker or enter a manual company name and explicitly check the confirmation checkbox (`name_confirmed`) before saving.
 
+### 2.3 Portfolio Row Swapping (`/api/portfolio-tracker/swap`)
+
+Holdings can be moved between `LOAN`, `MADI`, and `BAPA` portfolios either individually (via the row Swap icon) or in batches (via multi-select checkboxes and the "Swap Selected" button):
+- **Swapping to `LOAN`**: Prompts for destination person (`MADI` or `BAPA`).
+- **Swapping to `MADI` or `BAPA`**: Clears person assignment.
+- **Unique Constraint & Lot Merging**: If the destination portfolio already holds an open position for the same symbol, the incoming holding's buy lots are automatically re-parented into the existing destination holding and the source container is cleanly retired, preserving all lot purchase histories without constraint collisions.
+
 ---
 
 ## 3. Financial Calculations (`stockmon/portfolio_tracker.py`)

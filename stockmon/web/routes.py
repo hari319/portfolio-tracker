@@ -1054,6 +1054,56 @@ def api_portfolio_tracker_update_holding(holding_id: int):
     })
 
 
+@bp.post("/api/portfolio-tracker/swap")
+def api_portfolio_tracker_swap():
+    """Swap one or more open holdings to a different portfolio (LOAN, MADI, BAPA)."""
+    payload = request.get_json(silent=True) or request.form
+    if not payload:
+        return jsonify({"ok": False, "error": "Invalid request payload."}), 400
+
+    raw_ids = payload.get("holding_ids")
+    if raw_ids is None and payload.get("holding_id") is not None:
+        raw_ids = [payload.get("holding_id")]
+
+    if not raw_ids or not isinstance(raw_ids, list):
+        return jsonify({"ok": False, "error": "holding_ids must be a non-empty list of integers."}), 400
+
+    try:
+        holding_ids = [int(i) for i in raw_ids]
+    except (ValueError, TypeError):
+        return jsonify({"ok": False, "error": "Invalid holding ID in holding_ids."}), 400
+
+    target_portfolio = (payload.get("target_portfolio") or "").strip().upper()
+    target_person = payload.get("target_person")
+
+    from ..db.backup import create_backup
+    from ..db.repositories import holdings as hold_repo
+
+    try:
+        res = hold_repo.swap_holdings(
+            holding_ids=holding_ids,
+            target_portfolio=target_portfolio,
+            target_person=target_person,
+        )
+    except ValidationError as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 400
+    except Exception as exc:
+        logger.exception("Failed to swap holdings")
+        return jsonify({"ok": False, "error": f"Failed to swap holdings: {exc}"}), 500
+
+    try:
+        create_backup()
+    except Exception:
+        pass
+
+    target_desc = f"{target_portfolio} ({target_person})" if target_portfolio == "LOAN" else target_portfolio
+    return jsonify({
+        "ok": True,
+        "message": f"Successfully moved {res['total_processed']} holding(s) to {target_desc}.",
+        **res,
+    })
+
+
 @bp.put("/api/portfolio-tracker/sold/<int:holding_id>")
 def api_portfolio_tracker_update_sold(holding_id: int):
     """Update a sold position (invest_date, sell_date, quantity, avg_price, sell_price, invested_amount, buy_charge, sell_charge, remarks, person, stock_name)."""
