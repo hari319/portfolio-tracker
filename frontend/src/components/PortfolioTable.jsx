@@ -2,6 +2,67 @@ import React from 'react';
 import { ExternalLink, Trash2, AlertCircle } from 'lucide-react';
 import EmaCell from './EmaCell';
 
+function getCostRiskInfo(row) {
+  const avgPrice = Number(row.avg_price);
+  const currentPrice = Number(row.price);
+
+  if (
+    row.avg_price === null ||
+    row.avg_price === undefined ||
+    isNaN(avgPrice) ||
+    avgPrice <= 0 ||
+    row.price === null ||
+    row.price === undefined ||
+    isNaN(currentPrice) ||
+    row.error
+  ) {
+    return null;
+  }
+
+  // Use backend tier/drawdown if provided, else compute as fallback
+  const drawdownPct =
+    typeof row.cost_drawdown_pct === 'number'
+      ? row.cost_drawdown_pct
+      : Number((((currentPrice - avgPrice) / avgPrice) * 100).toFixed(2));
+
+  if (drawdownPct >= 0) {
+    return null; // At or above cost basis, no risk pill
+  }
+
+  let tier = row.risk_tier;
+  if (!tier) {
+    if (drawdownPct > -5.0) {
+      tier = 'mild';
+    } else if (drawdownPct > -10.0) {
+      tier = 'moderate';
+    } else {
+      tier = 'critical';
+    }
+  }
+
+  const absPct = Math.abs(drawdownPct).toFixed(1);
+  const formattedAvg = avgPrice.toLocaleString('en-IN', {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  });
+
+  let tooltip = '';
+  if (tier === 'mild') {
+    tooltip = `Minor pullback: trading ${absPct}% below average cost (₹${formattedAvg})`;
+  } else if (tier === 'moderate') {
+    tooltip = `Stop-loss zone: trading ${absPct}% below average cost (₹${formattedAvg})`;
+  } else {
+    tooltip = `Critical drawdown: trading ${absPct}% below average cost (₹${formattedAvg})`;
+  }
+
+  return {
+    tier,
+    drawdownPct,
+    label: `▼ -${absPct}%`,
+    tooltip,
+  };
+}
+
 export default function PortfolioTable({
   portfolioName,
   rows = [],
@@ -55,6 +116,7 @@ export default function PortfolioTable({
         <tbody>
           {sortedRows.map((row) => {
             const isError = Boolean(row.error);
+            const riskInfo = !isError ? getCostRiskInfo(row) : null;
 
             return (
               <tr key={row.symbol} className={isError ? 'row-error' : ''}>
@@ -93,14 +155,24 @@ export default function PortfolioTable({
 
                 {/* Avg Price */}
                 <td>
-                  <span className="col-price-val">
-                    {row.avg_price !== null && row.avg_price !== undefined
-                      ? `₹${Number(row.avg_price).toLocaleString('en-IN', {
-                          minimumFractionDigits: 2,
-                          maximumFractionDigits: 2,
-                        })}`
-                      : '—'}
-                  </span>
+                  <div className="col-avg-price-wrap">
+                    <span className="col-price-val">
+                      {row.avg_price !== null && row.avg_price !== undefined
+                        ? `₹${Number(row.avg_price).toLocaleString('en-IN', {
+                            minimumFractionDigits: 2,
+                            maximumFractionDigits: 2,
+                          })}`
+                        : '—'}
+                    </span>
+                    {riskInfo && (
+                      <span
+                        className={`cost-risk-pill tier-${riskInfo.tier}`}
+                        title={riskInfo.tooltip}
+                      >
+                        {riskInfo.label}
+                      </span>
+                    )}
+                  </div>
                 </td>
 
                 {/* Data or Error */}

@@ -93,6 +93,15 @@ Holdings can be moved between `LOAN`, `MADI`, and `BAPA` portfolios either indiv
 - **Swapping to `MADI` or `BAPA`**: Clears person assignment.
 - **Unique Constraint & Lot Merging**: If the destination portfolio already holds an open position for the same symbol, the incoming holding's buy lots are automatically re-parented into the existing destination holding and the source container is cleanly retired, preserving all lot purchase histories without constraint collisions.
 
+### 2.4 Tracker Tab Cost-Basis Risk Indicator
+
+Positions on the Tracker tab that are sourced from Portfolio Tracker automatically compare their live market price against their weighted average purchase price (`avg_price`). When a position trades below its cost basis, an inline risk pill is displayed stacked directly below the Avg Price value using a graduated three-tier severity model:
+- **Tier 1 (Mild / Watch)**: `0.01%` to `4.99%` below cost basis. Rendered as a soft amber pill (`▼ -2.4%`, minor pullback).
+- **Tier 2 (Stop-Loss Zone / Warning)**: `5.00%` to `9.99%` below cost basis. Rendered as an orange pill (`▼ -6.8%`, typical stop-loss action zone).
+- **Tier 3 (Critical)**: `10.00%` or more below cost basis. Rendered as a crimson red pill (`▼ -12.5%`, critical drawdown).
+- **At or Above Cost Basis (`price >= avg_price`)**: No risk pill displayed (clean numeric display).
+- **Unowned Watchlist Tickers (`avg_price is None`)**: No risk pill displayed.
+
 ---
 
 ## 3. Financial Calculations (`stockmon/portfolio_tracker.py`)

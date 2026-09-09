@@ -55,6 +55,30 @@ def save_snapshot(snapshot: dict[str, Any]) -> None:
     _snap_repo.save_snapshot(snapshot)
 
 
+def compute_cost_risk(price: float | None, avg_price: float | None) -> tuple[float | None, str | None]:
+    """Calculate cost drawdown percentage and risk tier against average purchase price.
+
+    Tiers:
+    - mild: 0.01% to 4.99% below avg price (drawdown in (-5.0, 0))
+    - moderate (stop-loss zone): 5.00% to 9.99% below avg price (drawdown in (-10.0, -5.0])
+    - critical: 10.00% or more below avg price (drawdown <= -10.0)
+    - None: at or above cost basis (drawdown >= 0), or missing price / avg_price.
+    """
+    if price is None or avg_price is None or avg_price <= 0:
+        return None, None
+
+    drawdown_pct = round(((price - avg_price) / avg_price) * 100.0, 2)
+    if drawdown_pct >= 0:
+        return drawdown_pct, None
+
+    if drawdown_pct > -5.0:
+        return drawdown_pct, "mild"
+    elif drawdown_pct > -10.0:
+        return drawdown_pct, "moderate"
+    else:
+        return drawdown_pct, "critical"
+
+
 def build_row(symbol: str, settings: dict[str, Any] | None = None) -> dict[str, Any]:
     """Fetch one ticker and build its table row. Never raises."""
     settings = settings or load_settings()
@@ -66,6 +90,8 @@ def build_row(symbol: str, settings: dict[str, Any] | None = None) -> dict[str, 
         "display": display_name(symbol),
         "name": "",
         "avg_price": None,
+        "cost_drawdown_pct": None,
+        "risk_tier": None,
         "is_sourced": False,
         "is_manual": True,
         "url": tradingview_url(symbol),
@@ -219,6 +245,9 @@ def refresh_portfolios(
                 row["is_manual"] = meta.get("is_manual", True)
                 if meta.get("stock_name"):
                     row["name"] = meta["stock_name"]
+                drawdown_pct, risk_tier = compute_cost_risk(row.get("price"), row.get("avg_price"))
+                row["cost_drawdown_pct"] = drawdown_pct
+                row["risk_tier"] = risk_tier
                 rows.append(row)
         rows.sort(key=_ema_sort_key)
         snapshot["portfolios"][name] = {"rows": rows}
@@ -250,6 +279,9 @@ def refresh_portfolios(
 
 def upsert_row(portfolio_name: str, row: dict[str, Any], source: str = "ticker-added") -> dict[str, Any]:
     """Insert/replace a single row in the stored snapshot and publish it."""
+    drawdown_pct, risk_tier = compute_cost_risk(row.get("price"), row.get("avg_price"))
+    row["cost_drawdown_pct"] = drawdown_pct
+    row["risk_tier"] = risk_tier
     snapshot = load_snapshot()
     bucket = snapshot["portfolios"].setdefault(portfolio_name, {"rows": []})
     rows = [existing for existing in bucket["rows"] if existing.get("symbol") != row["symbol"]]

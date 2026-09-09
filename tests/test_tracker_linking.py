@@ -362,3 +362,100 @@ class TestTrackerLinking:
         assert rows[2]["symbol"] == "CCC.NS"       # Priority 6 (alpha C)
         assert rows[3]["symbol"] == "DDD.NS"       # Priority 6 (alpha D)
 
+
+class TestCostBasisRiskIndicator:
+    """Test cost-basis drawdown percentage calculation and risk tiers."""
+
+    def test_compute_cost_risk_tiers(self):
+        from stockmon.service import compute_cost_risk
+
+        # In profit
+        pct, tier = compute_cost_risk(price=110.0, avg_price=100.0)
+        assert pct == 10.0
+        assert tier is None
+
+        # Break-even
+        pct, tier = compute_cost_risk(price=100.0, avg_price=100.0)
+        assert pct == 0.0
+        assert tier is None
+
+        # Tier 1: Mild / Watch (0.01% to 4.99% below cost)
+        pct, tier = compute_cost_risk(price=98.0, avg_price=100.0)
+        assert pct == -2.0
+        assert tier == "mild"
+
+        pct, tier = compute_cost_risk(price=95.01, avg_price=100.0)
+        assert pct == -4.99
+        assert tier == "mild"
+
+        # Tier 2: Stop-Loss Zone (-5.00% to -9.99%)
+        pct, tier = compute_cost_risk(price=95.0, avg_price=100.0)
+        assert pct == -5.0
+        assert tier == "moderate"
+
+        pct, tier = compute_cost_risk(price=93.0, avg_price=100.0)
+        assert pct == -7.0
+        assert tier == "moderate"
+
+        pct, tier = compute_cost_risk(price=90.01, avg_price=100.0)
+        assert pct == -9.99
+        assert tier == "moderate"
+
+        # Tier 3: Critical (<= -10.00%)
+        pct, tier = compute_cost_risk(price=90.0, avg_price=100.0)
+        assert pct == -10.0
+        assert tier == "critical"
+
+        pct, tier = compute_cost_risk(price=82.5, avg_price=100.0)
+        assert pct == -17.5
+        assert tier == "critical"
+
+    def test_compute_cost_risk_edge_cases(self):
+        from stockmon.service import compute_cost_risk
+
+        # None / missing price or avg_price
+        assert compute_cost_risk(price=None, avg_price=100.0) == (None, None)
+        assert compute_cost_risk(price=100.0, avg_price=None) == (None, None)
+        assert compute_cost_risk(price=None, avg_price=None) == (None, None)
+
+        # Zero or negative avg_price (bonus shares / invalid input)
+        assert compute_cost_risk(price=50.0, avg_price=0.0) == (None, None)
+        assert compute_cost_risk(price=50.0, avg_price=-10.0) == (None, None)
+
+    @patch("stockmon.service.get_ticker_data")
+    def test_refresh_portfolios_populates_cost_risk(self, mock_get_ticker, clean_all):
+        """refresh_portfolios must populate cost_drawdown_pct and risk_tier for sourced tickers."""
+        from stockmon.data_fetcher import TickerData
+        import pandas as pd
+
+        # Add a holding in Portfolio Tracker for MADI
+        hold_repo.add_holding(
+            portfolio_name="MADI",
+            symbol="INFY.NS",
+            stock_name="Infosys Ltd",
+            quantity=10,
+            avg_price=1000.0,
+        )
+
+        # Mock ticker data with price at 940 (-6% drop -> moderate / stop-loss zone)
+        mock_get_ticker.return_value = TickerData(
+            symbol="INFY.NS",
+            price=940.0,
+            currency="INR",
+            name="Infosys Ltd",
+            as_of="2026-09-09",
+            daily=pd.DataFrame({"Close": [940.0] * 250}),
+            weekly=pd.DataFrame({"Close": [940.0] * 50}),
+        )
+
+        snapshot = refresh_portfolios(source="test", publish=False)
+        madi_rows = snapshot["portfolios"]["MADI"]["rows"]
+        assert len(madi_rows) == 1
+        row = madi_rows[0]
+        assert row["symbol"] == "INFY.NS"
+        assert row["avg_price"] == 1000.0
+        assert row["price"] == 940.0
+        assert row["cost_drawdown_pct"] == -6.0
+        assert row["risk_tier"] == "moderate"
+
+
