@@ -283,3 +283,44 @@ export function getExportUrl(portfolio = '', format = 'xlsx') {
   return `/api/portfolio-tracker/export?${p}format=${encodeURIComponent(format)}`;
 }
 
+// ---------------------------------------------------------------------------
+// Swing Tracker API
+// ---------------------------------------------------------------------------
+
+export async function fetchSwingTracker() {
+  return request('/api/swing-tracker');
+}
+
+export async function addSwingTrade(data) {
+  return sendJson('/api/swing-tracker', 'POST', data);
+}
+
+export async function updateSwingTrade(id, data) {
+  return sendJson(`/api/swing-tracker/${encodeURIComponent(id)}`, 'PUT', data);
+}
+
+export async function deleteSwingTrade(id) {
+  return request(`/api/swing-tracker/${encodeURIComponent(id)}`, { method: 'DELETE' });
+}
+
+export async function refreshSwingTradePrice(id) {
+  return sendJson(`/api/swing-tracker/${encodeURIComponent(id)}/refresh-price`, 'POST', {});
+}
+
+export async function refreshAllSwingTradePrices() {
+  return sendJson('/api/swing-tracker/refresh-all', 'POST', {});
+}
+
+export async function fetchSwingSources() {
+  return request('/api/swing-tracker/sources');
+}
+
+export async function addSwingSource(name) {
+  return sendJson('/api/swing-tracker/sources', 'POST', { name });
+}
+
+export async function lookupSwingTicker(symbol) {
+  return request(`/api/swing-tracker/lookup-ticker?symbol=${encodeURIComponent(symbol)}`);
+}
+
+

@@ -878,38 +878,36 @@ export default function ScreenerTab({ showToast }) {
 
       {/* Table Controls & Filter Bar */}
       <div className="d-flex flex-wrap justify-content-between align-items-center gap-3 mb-3">
-        {/* Symbol Search Form */}
-        <form onSubmit={handleSearchSubmit} className="d-flex align-items-center gap-2 flex-grow-1" style={{ maxWidth: '420px' }}>
+        {/* Symbol Search Input (live as-you-type filter) */}
+        <div className="d-flex align-items-center gap-2 flex-grow-1" style={{ maxWidth: '380px' }}>
           <div className="input-group">
-            <span className="input-group-text bg-white">
-              <Search size={16} className="text-muted" />
+            <span className="input-group-text bg-white border-end-0 text-muted">
+              <Search size={15} />
             </span>
             <input
               type="text"
-              className="form-control"
+              className="form-control border-start-0 ps-0"
               placeholder="Search symbol (e.g. RELIANCE, TCS)..."
               value={searchInput}
               onChange={(e) => {
-                setSearchInput(e.target.value);
-                // Also trigger instant filter if cleared
-                if (!e.target.value.trim()) setActiveSearch('');
+                const val = e.target.value;
+                setSearchInput(val);
+                setActiveSearch(val.trim().toUpperCase());
+                setCurrentPage(1);
               }}
             />
             {searchInput && (
               <button
                 type="button"
-                className="btn btn-outline-secondary"
+                className="btn btn-outline-secondary border-start-0"
                 onClick={handleClearSearch}
                 title="Clear search"
               >
                 <X size={15} />
               </button>
             )}
-            <button type="submit" className="btn btn-primary px-3">
-              Search
-            </button>
           </div>
-        </form>
+        </div>
 
         {/* Column Picker & Rows Per Page */}
         <div className="d-flex align-items-center gap-2 flex-wrap">

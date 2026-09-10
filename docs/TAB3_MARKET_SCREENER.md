@@ -96,21 +96,34 @@ The screener organizes presets into three tiers:
 
 ### Tier 3: 📊 Classical Momentum & Positional Strategies
 
-1. **`⚡ BTST Surge`**: Overnight gap-up and next-morning continuation (`Close in Range >= 80%`, `Change % >= +1.5%`, `RVOL >= 1.2x`, `Delivery % >= 30%`).
-2. **`🚀 Swing Momentum Breakout`**: Multi-week trend continuation (`Price > SMA 20 & 50`, `Supertrend == Bullish`, `RSI >= 55`, `RVOL >= 1.0x`).
-3. **`⭐ 52W High Breakout`**: Within 5% of 52-week high with volume confirmation (`dist_52w_high <= 5%`, `RVOL >= 1.2x`).
-4. **`📉 Dip Buyer`**: Low-risk entries in macro bull trends (`Price > SMA 200`, `Price < SMA 20`, `RSI between 40 and 52`).
-5. **`💎 Long-Term Compounders`**: Multi-quarter relative strength (`Price > SMA 200`, `SMA 50 > SMA 200`, `1Y Return >= 15%`, `dist_52w_high <= 20%`).
-6. **`📦 High Delivery Accumulation`**: Smart money taking physical delivery (`Delivery % >= 60%`, `RVOL >= 1.0x`, `Change % >= 0%`).
+1. **`⚡ Quick Rocketing` (Backtested Swing Momentum)**:
+   * **Goal**: Explosive 1–3 day breakout thrust with volume surge and active RSI momentum.
+   * **Formula**: `Price >= ₹50`, `Change % >= +3.5%`, `RVOL >= 2.5x`, `Close in Range >= 85%`, `Supertrend == Bullish`, `RSI 14 between 60 and 78`.
+   * **Backtest**: ~31 picks/day shortlist, 53.2% 2-day win rate (1.86 PF), 52.4% 3-day win rate (2.23 PF, +1.85% avg return).
+2. **`🔥 Momentum Masters` (High-Consensus Swing Leaders)**:
+   * **Goal**: Maximum technical alignment across indicator confirmations, confirmed strong trend, and volume.
+   * **Formula**: `Price >= ₹50`, `Confirmations >= 7/8`, `Trend Direction == Bullish`, `Trend Strength == Strong`, `RVOL >= 2.0x`, `Close in Range >= 80%`, `Supertrend == Bullish`, `Change % >= +2.0%`.
+   * **Backtest**: ~51 picks/day shortlist, 53.7% 3-day win rate (2.05 PF, +1.64% avg return).
+3. **`🔬 Confirmed Accumulation Swing` (Disciplined Setup + Delivery)**:
+   * **Goal**: Disciplined swing trading combining technical confirmations, strong setup quality, and heavy institutional delivery.
+   * **Formula**: `Price >= ₹50`, `Confirmations >= 7/8`, `Setup Strength == Strong`, `Delivery % >= 45%`, `Supertrend == Bullish`, `RVOL >= 1.5x`, `Change % >= +1.5%`, `Close in Range >= 75%`.
+   * **Backtest**: ~55 picks/day shortlist, 53.0% 1-day win rate (1.80 PF), 52.9% 3-day win rate (1.85 PF, +1.19% avg return).
+4. **`⚡ BTST Surge`**: Overnight gap-up and next-morning continuation (`Close in Range >= 80%`, `Change % >= +1.5%`, `RVOL >= 1.2x`, `Delivery % >= 30%`).
+5. **`🚀 Swing Momentum Breakout`**: Multi-week trend continuation (`Price > SMA 20 & 50`, `Supertrend == Bullish`, `RSI >= 55`, `RVOL >= 1.0x`).
+6. **`⭐ 52W High Breakout`**: Within 5% of 52-week high with volume confirmation (`dist_52w_high <= 5%`, `RVOL >= 1.2x`).
+7. **`📉 Dip Buyer`**: Low-risk entries in macro bull trends (`Price > SMA 200`, `Price < SMA 20`, `RSI between 40 and 52`).
+8. **`💎 Long-Term Compounders`**: Multi-quarter relative strength (`Price > SMA 200`, `SMA 50 > SMA 200`, `1Y Return >= 15%`, `dist_52w_high <= 20%`).
+9. **`📦 High Delivery Accumulation`**: Smart money taking physical delivery (`Delivery % >= 60%`, `RVOL >= 1.0x`, `Change % >= 0%`).
 
 ---
 
 ## 5. Custom Multi-Rule Filter Builder
 
 * Click **Custom Rule Builder** to create your own custom scan conditions.
-* **146 Technical & Fundamental Fields**: Moving Averages, RSI, MACD, ADX, ATR, Bollinger Bands, Delivery, Volatility, Supertrend, Multi-Day Trajectory, etc.
+* **186 Technical & Fundamental Fields**: Complete parity with the 154-column table, including Moving Averages, RSI, MACD, ADX, ATR, Bollinger Bands, Delivery, Volatility, Supertrend, Setup indicators, Confirmations (with numerator fraction parsing like `>= 7`), and Multi-Day Trajectory indicators.
 * **Column-to-Column Comparisons**: Compare any indicator directly against another column (e.g. `Price > SMA 20`, `SMA 50 > SMA 200`).
 * **Flexible Operators**: `>`, `>=`, `<`, `<=`, `==`, `!=`, `between (Range)`, and `contains`.
 * **Match Logic**: Toggle between `All Rules (AND)` and `Any Rule (OR)`.
 * **Save Custom Presets**: Click **Save as Preset** to store your rules in browser local storage with a custom name for instant access anytime.
 * **Strategy Explanation Modal**: Click the **(i)** icon on any preset chip to view its timeframe, in-depth rationale, and exact checklist.
+

@@ -71,6 +71,15 @@ def _v4_stock_name(conn: sqlite3.Connection) -> None:
         pass
 
 
+def _v5_swing_tracker(conn: sqlite3.Connection) -> None:
+    """Create swing_tracker and swing_tracker_source tables (schema_v5.sql)."""
+    conn.executescript(_read_sql("schema_v5.sql"))
+    try:
+        conn.execute("DELETE FROM swing_tracker_source WHERE name IN ('Big Breaking Wire', 'Breakout Master')")
+    except Exception:
+        pass
+
+
 # Append-only list: (version_number, callable).
 # NEVER edit or renumber a shipped migration.
 MIGRATIONS: list[tuple[int, callable]] = [
@@ -78,6 +87,7 @@ MIGRATIONS: list[tuple[int, callable]] = [
     (2, _v2_portfolio_tracker),
     (3, _v3_invested_amount),
     (4, _v4_stock_name),
+    (5, _v5_swing_tracker),
 ]
 
 

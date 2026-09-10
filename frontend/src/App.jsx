@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
-import { Activity, Target, SlidersHorizontal, PieChart, Search, X } from 'lucide-react';
+import { Activity, Target, SlidersHorizontal, PieChart, Search, X, TrendingUp } from 'lucide-react';
 import * as api from './api';
 import Header from './components/Header';
 import AddTickerPanel from './components/AddTickerPanel';
@@ -9,11 +9,12 @@ import PortfolioSection from './components/PortfolioSection';
 import StatusTab from './components/StatusTab';
 import ScreenerTab from './components/ScreenerTab';
 import PortfolioTrackerTab from './components/PortfolioTrackerTab';
+import SwingTrackerTab from './components/SwingTrackerTab';
 import Toast from './components/Toast';
 import Footer from './components/Footer';
 
 export default function App() {
-  const [activeTab, setActiveTab] = useState('tracker'); // 'tracker' | 'status' | 'screener'
+  const [activeTab, setActiveTab] = useState('tracker'); // 'tracker' | 'portfolio-tracker' | 'status' | 'screener' | 'swing-tracker'
   const [snapshot, setSnapshot] = useState(null);
   const [runTimes, setRunTimes] = useState(['09:30', '11:30']);
   const [portfolioNames, setPortfolioNames] = useState(['BAPA', 'MADI']);
@@ -256,6 +257,14 @@ export default function App() {
           <SlidersHorizontal size={16} />
           <span>Screener</span>
         </button>
+        <button
+          type="button"
+          className={`tab-nav-item ${activeTab === 'swing-tracker' ? 'active' : ''}`}
+          onClick={() => setActiveTab('swing-tracker')}
+        >
+          <TrendingUp size={16} />
+          <span>Swing Tracker</span>
+        </button>
       </div>
 
       {/* Tab Content: Tracker vs Status vs Screener */}
@@ -349,6 +358,14 @@ export default function App() {
 
       {activeTab === 'screener' && (
         <ScreenerTab showToast={showToast} />
+      )}
+
+      {activeTab === 'swing-tracker' && (
+        <SwingTrackerTab
+          showToast={showToast}
+          isBusy={isBusy}
+          setIsBusy={setIsBusy}
+        />
       )}
 
       {/* Footer */}

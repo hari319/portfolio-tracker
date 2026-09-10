@@ -24,6 +24,10 @@ const TAB_HEADERS = {
     title: 'Stock Screener',
     subtitle: 'Multi-day technical screening, strategy presets, and customizable metrics for NSE/BSE equities.',
   },
+  'swing-tracker': {
+    title: 'Swing Tracker',
+    subtitle: 'Track swing trades, entry zones, stop losses, multiple targets, pattern breakouts, and trade sources with live price monitoring.',
+  },
 };
 
 export default function Header({
