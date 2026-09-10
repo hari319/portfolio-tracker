@@ -2,17 +2,94 @@ import React from 'react';
 import { ExternalLink, Trash2, AlertCircle } from 'lucide-react';
 import EmaCell from './EmaCell';
 
+function getCostRiskInfo(row) {
+  const avgPrice = Number(row.avg_price);
+  const currentPrice = Number(row.price);
+
+  if (
+    row.avg_price === null ||
+    row.avg_price === undefined ||
+    isNaN(avgPrice) ||
+    avgPrice <= 0 ||
+    row.price === null ||
+    row.price === undefined ||
+    isNaN(currentPrice) ||
+    row.error
+  ) {
+    return null;
+  }
+
+  // Use backend tier/drawdown if provided, else compute as fallback
+  const drawdownPct =
+    typeof row.cost_drawdown_pct === 'number'
+      ? row.cost_drawdown_pct
+      : Number((((currentPrice - avgPrice) / avgPrice) * 100).toFixed(2));
+
+  if (drawdownPct >= 0) {
+    return null; // At or above cost basis, no risk pill
+  }
+
+  let tier = row.risk_tier;
+  if (!tier) {
+    if (drawdownPct > -5.0) {
+      tier = 'mild';
+    } else if (drawdownPct > -10.0) {
+      tier = 'moderate';
+    } else {
+      tier = 'critical';
+    }
+  }
+
+  const absPct = Math.abs(drawdownPct).toFixed(1);
+  const formattedAvg = avgPrice.toLocaleString('en-IN', {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  });
+
+  let tooltip = '';
+  if (tier === 'mild') {
+    tooltip = `Minor pullback: trading ${absPct}% below average cost (₹${formattedAvg})`;
+  } else if (tier === 'moderate') {
+    tooltip = `Stop-loss zone: trading ${absPct}% below average cost (₹${formattedAvg})`;
+  } else {
+    tooltip = `Critical drawdown: trading ${absPct}% below average cost (₹${formattedAvg})`;
+  }
+
+  return {
+    tier,
+    drawdownPct,
+    label: `▼ -${absPct}%`,
+    tooltip,
+  };
+}
+
 export default function PortfolioTable({
   portfolioName,
   rows = [],
   periods = [9, 21, 50, 100, 200],
   onRemoveTicker,
   disabled = false,
+  searchQuery = '',
 }) {
-  if (!rows || rows.length === 0) {
+  const sortedRows = React.useMemo(() => {
+    if (!rows || rows.length === 0) return [];
+    return [...rows].sort((a, b) => {
+      const aErr = Boolean(a.error || a.price === null || a.price === undefined);
+      const bErr = Boolean(b.error || b.price === null || b.price === undefined);
+      if (aErr && !bErr) return 1;
+      if (!aErr && bErr) return -1;
+      return 0; // preserve server-side EMA order for normal rows
+    });
+  }, [rows]);
+
+  if (!sortedRows || sortedRows.length === 0) {
     return (
       <div className="p-4 text-center text-muted">
-        No tickers in <strong>{portfolioName}</strong> yet — add one using the form above.
+        {searchQuery ? (
+          <>No tickers matching &ldquo;{searchQuery}&rdquo; in <strong>{portfolioName}</strong>.</>
+        ) : (
+          <>No tickers in <strong>{portfolioName}</strong> yet — add one using the form above.</>
+        )}
       </div>
     );
   }
@@ -22,7 +99,8 @@ export default function PortfolioTable({
       <table className="table-stock">
         <thead>
           <tr>
-            <th style={{ width: '220px' }}>Ticker</th>
+            <th className="col-sticky-ticker" style={{ width: '220px' }}>Ticker</th>
+            <th style={{ width: '120px' }}>Avg Price</th>
             <th style={{ width: '130px' }}>Current Price</th>
             <th style={{ width: '90px' }}>Signal</th>
             {periods.map((period) => (
@@ -36,13 +114,14 @@ export default function PortfolioTable({
           </tr>
         </thead>
         <tbody>
-          {rows.map((row) => {
+          {sortedRows.map((row) => {
             const isError = Boolean(row.error);
+            const riskInfo = !isError ? getCostRiskInfo(row) : null;
 
             return (
               <tr key={row.symbol} className={isError ? 'row-error' : ''}>
                 {/* Ticker Column */}
-                <td>
+                <td className="col-sticky-ticker">
                   <div className="col-ticker-wrap">
                     <div className="d-flex align-items-center gap-1">
                       <a
@@ -70,6 +149,28 @@ export default function PortfolioTable({
                       <div className="stock-company-name" title={row.name}>
                         {row.name}
                       </div>
+                    )}
+                  </div>
+                </td>
+
+                {/* Avg Price */}
+                <td>
+                  <div className="col-avg-price-wrap">
+                    <span className="col-price-val">
+                      {row.avg_price !== null && row.avg_price !== undefined
+                        ? `₹${Number(row.avg_price).toLocaleString('en-IN', {
+                            minimumFractionDigits: 2,
+                            maximumFractionDigits: 2,
+                          })}`
+                        : '—'}
+                    </span>
+                    {riskInfo && (
+                      <span
+                        className={`cost-risk-pill tier-${riskInfo.tier}`}
+                        title={riskInfo.tooltip}
+                      >
+                        {riskInfo.label}
+                      </span>
                     )}
                   </div>
                 </td>
@@ -118,15 +219,27 @@ export default function PortfolioTable({
 
                 {/* Actions (Delete) */}
                 <td style={{ textAlign: 'center' }}>
-                  <button
-                    type="button"
-                    className="action-del-btn"
-                    title={`Remove ${row.symbol} from ${portfolioName}`}
-                    disabled={disabled}
-                    onClick={() => onRemoveTicker(portfolioName, row.symbol)}
-                  >
-                    <Trash2 size={15} />
-                  </button>
+                  {row.is_sourced ? (
+                    <button
+                      type="button"
+                      className="action-del-btn opacity-30"
+                      title="Managed by Portfolio Tracker — mark as sold in Portfolio Tracker to remove"
+                      disabled={true}
+                      style={{ cursor: 'not-allowed' }}
+                    >
+                      <Trash2 size={15} />
+                    </button>
+                  ) : (
+                    <button
+                      type="button"
+                      className="action-del-btn"
+                      title={`Remove ${row.symbol} from ${portfolioName}`}
+                      disabled={disabled}
+                      onClick={() => onRemoveTicker(portfolioName, row.symbol)}
+                    >
+                      <Trash2 size={15} />
+                    </button>
+                  )}
                 </td>
               </tr>
             );

@@ -729,10 +729,309 @@ export const SCREENER_FILTERS = [
     "group": "Extreme Moves",
     "key": "lower_circuit",
     "label": "Lower Circuit (1/0)"
+  },
+
+  // --- Fields from table columns added for custom rule builder parity ---
+  {
+    "group": "Signal",
+    "key": "signal",
+    "label": "Signal (Strong Bullish / Bullish / Neutral / Bearish / Strong Bearish)"
+  },
+  {
+    "group": "Moving Average Extras",
+    "key": "ma_trend",
+    "label": "MA Trend"
+  },
+  {
+    "group": "Moving Average Extras",
+    "key": "ma_signal",
+    "label": "MA Signal"
+  },
+  {
+    "group": "Moving Average Extras",
+    "key": "price_vs_sma_20",
+    "label": "Price vs SMA 20 %"
+  },
+  {
+    "group": "Moving Average Extras",
+    "key": "price_vs_sma_50",
+    "label": "Price vs SMA 50 %"
+  },
+  {
+    "group": "Moving Average Extras",
+    "key": "price_vs_sma_200",
+    "label": "Price vs SMA 200 %"
+  },
+  {
+    "group": "Technical Extras",
+    "key": "rsi_zone",
+    "label": "RSI Zone"
+  },
+  {
+    "group": "Technical Extras",
+    "key": "rsi_change",
+    "label": "RSI Change"
+  },
+  {
+    "group": "Technical Extras",
+    "key": "rsi_trend",
+    "label": "RSI Trend"
+  },
+  {
+    "group": "Technical Extras",
+    "key": "di_diff",
+    "label": "DI Difference (+DI - -DI)"
+  },
+  {
+    "group": "Technical Extras",
+    "key": "adx_trend",
+    "label": "ADX Trend"
+  },
+  {
+    "group": "Supertrend Extras",
+    "key": "st_direction",
+    "label": "Supertrend Direction Text"
+  },
+  {
+    "group": "Supertrend Extras",
+    "key": "st_signal",
+    "label": "Supertrend Signal"
+  },
+  {
+    "group": "Supertrend Extras",
+    "key": "price_vs_supertrend",
+    "label": "Price vs Supertrend %"
+  },
+  {
+    "group": "52 Week Extras",
+    "key": "pos_52w",
+    "label": "52 Week Position %"
+  },
+  {
+    "group": "52 Week Extras",
+    "key": "new_52w_high",
+    "label": "New 52W High (1/0)"
+  },
+  {
+    "group": "52 Week Extras",
+    "key": "new_52w_low",
+    "label": "New 52W Low (1/0)"
+  },
+  {
+    "group": "Breakout Extras",
+    "key": "breakout_type",
+    "label": "Breakout Type"
+  },
+  {
+    "group": "Breakout Extras",
+    "key": "breakout_price",
+    "label": "Breakout Price Level"
+  },
+  {
+    "group": "Breakout Extras",
+    "key": "breakout_pct",
+    "label": "Breakout %"
+  },
+  {
+    "group": "Breakout Extras",
+    "key": "breakout_strength",
+    "label": "Breakout Strength"
+  },
+  {
+    "group": "Volume Extras",
+    "key": "volume_trend",
+    "label": "Volume Trend"
+  },
+  {
+    "group": "Volume Extras",
+    "key": "volume_breakout",
+    "label": "Volume Breakout (1/0)"
+  },
+  {
+    "group": "Volatility Extras",
+    "key": "daily_range_pct",
+    "label": "Daily Range %"
+  },
+  {
+    "group": "Volatility Extras",
+    "key": "volatility_rank",
+    "label": "Volatility Rank"
+  },
+  {
+    "group": "Trend",
+    "key": "trend_direction",
+    "label": "Trend Direction (Bullish/Bearish)"
+  },
+  {
+    "group": "Trend",
+    "key": "trend_strength",
+    "label": "Trend Strength (Strong/Weak)"
+  },
+  {
+    "group": "Setup",
+    "key": "setup",
+    "label": "Setup Indicators"
+  },
+  {
+    "group": "Setup",
+    "key": "setup_strength",
+    "label": "Setup Strength (Strong/Moderate/Weak)"
+  },
+  {
+    "group": "Setup",
+    "key": "bearish_setup",
+    "label": "Bearish Setup"
+  },
+  {
+    "group": "Setup",
+    "key": "confirmation_count",
+    "label": "Confirmations (e.g. 7/8)"
+  },
+  {
+    "group": "Multi-Day Trajectory",
+    "key": "accumulation_score",
+    "label": "Accumulation Score (0-100)"
+  },
+  {
+    "group": "Multi-Day Trajectory",
+    "key": "consecutive_rising_delivery",
+    "label": "Consecutive Delivery Up (Days)"
+  },
+  {
+    "group": "Multi-Day Trajectory",
+    "key": "delivery_growth_3d_pct",
+    "label": "3-Day Delivery Growth %"
+  },
+  {
+    "group": "Multi-Day Trajectory",
+    "key": "supertrend_flip_days",
+    "label": "Supertrend Flip (Days Ago)"
+  },
+  {
+    "group": "Multi-Day Trajectory",
+    "key": "ma20_cross_days",
+    "label": "20 SMA Cross (Days Ago)"
+  },
+  {
+    "group": "Multi-Day Trajectory",
+    "key": "consecutive_higher_lows",
+    "label": "Consecutive Higher Lows (Days)"
+  },
+  {
+    "group": "Multi-Day Trajectory",
+    "key": "vcp_compression_ratio",
+    "label": "VCP Compression Ratio"
+  },
+  {
+    "group": "Multi-Day Trajectory",
+    "key": "window_price_change_pct",
+    "label": "Multi-Day Window Return %"
+  },
+  {
+    "group": "Multi-Day Trajectory",
+    "key": "predictive_setups",
+    "label": "Predictive Setups (Array)"
   }
 ];
 
 export const STRATEGY_PRESETS = [
+  {
+    id: 'quick_rocketing',
+    name: '⚡ Quick Rocketing',
+    badge: 'Swing Rocket',
+    tagline: 'Explosive 3.5%+ thrust + 2.5x volume explosion + active momentum RSI',
+    category: 'Swing Trading',
+    color: '#059669',
+    description:
+      'High-conviction swing strategy identifying stocks with massive volume breakout ignition (RVOL >= 2.5x), ' +
+      'closing in the upper 15% of their daily range with strong positive price thrust (>= +3.5%). ' +
+      'Backtested against historical data: achieves a 53.2% 2-day win rate with a 1.86 Profit Factor, ' +
+      'and a 52.4% 3-day win rate with a 2.23 Profit Factor (+1.85% average 3-day return). ' +
+      'Generates a focused shortlist of 15–35 candidates rather than a wide uncurated list.',
+    criteriaExplanation: [
+      'Price >= ₹50 (filters out illiquid penny stocks and circuit locks)',
+      'Change % >= +3.5% (powerful momentum breakout thrust)',
+      'Volume Ratio (RVOL) >= 2.5x (massive institutional participation)',
+      'Close Position in Range >= 85% (closing right at the highs of the day)',
+      'Supertrend Direction = Bullish (regime trend confirmation)',
+      'RSI 14 between 60 and 78 (active bullish expansion zone without being overbought)'
+    ],
+    rules: [
+      { field: 'close', op: '>=', value: 50 },
+      { field: 'pct_change', op: '>=', value: 3.5 },
+      { field: 'volume_ratio_20', op: '>=', value: 2.5 },
+      { field: 'close_near_high_pct', op: '>=', value: 85 },
+      { field: 'supertrend_dir', op: '==', value: 1 },
+      { field: 'rsi_14', op: '>=', value: 60 },
+      { field: 'rsi_14', op: '<=', value: 78 }
+    ]
+  },
+  {
+    id: 'momentum_masters',
+    name: '🔥 Momentum Masters',
+    badge: 'Elite Momentum',
+    tagline: '7+ Bullish Confirmations + Strong Trend Direction + 2x Volume Surge',
+    category: 'Swing Trading',
+    color: '#dc2626',
+    description:
+      'Designed for maximum technical consensus. Requires at least 7 out of 8 bullish indicator confirmations, ' +
+      'an explicitly confirmed Strong Bullish Trend, double average volume (RVOL >= 2.0x), and closing near highs. ' +
+      'Backtested against historical data: achieves a 53.7% 3-day win rate with a 2.05 Profit Factor ' +
+      '(+1.64% average return) and an average shortlist of 30–50 high-conviction leaders.',
+    criteriaExplanation: [
+      'Price >= ₹50 (filters out illiquid penny stocks)',
+      'Confirmations >= 7 (numerator evaluated: matches 7/8, 8/8, 7/7 bullish signals)',
+      'Trend Direction = Bullish & Trend Strength = Strong',
+      'Volume Ratio (RVOL) >= 2.0x (strong accumulation volume)',
+      'Close Position in Range >= 80% (strong buyer close)',
+      'Supertrend Direction = Bullish',
+      'Change % >= +2.0% (positive session thrust)'
+    ],
+    rules: [
+      { field: 'close', op: '>=', value: 50 },
+      { field: 'confirmation_count', op: '>=', value: 7 },
+      { field: 'trend_direction', op: '==', value: 'Bullish' },
+      { field: 'trend_strength', op: '==', value: 'Strong' },
+      { field: 'volume_ratio_20', op: '>=', value: 2.0 },
+      { field: 'close_near_high_pct', op: '>=', value: 80 },
+      { field: 'supertrend_dir', op: '==', value: 1 },
+      { field: 'pct_change', op: '>=', value: 2.0 }
+    ]
+  },
+  {
+    id: 'confirmed_accumulation',
+    name: '🔬 Confirmed Accumulation Swing',
+    badge: 'Setup + Accumulation',
+    tagline: '7+ Confirmations + Strong Setup + 45%+ Delivery Accumulation',
+    category: 'Swing Trading',
+    color: '#4f46e5',
+    description:
+      'Implements the user-proposed combination of Technical Confirmations, Setup Strength, and Delivery Accumulation, ' +
+      'enhanced with price hygiene and trend regime filters. Without liquidity and trend filters, raw confirmation/setup ' +
+      'combinations suffer from broad dilution (800+ stocks) and microcap drawdown. ' +
+      'With disciplined rules (price >= ₹50, 7+ confirmations, Strong setup, >=45% delivery, RVOL >= 1.5x, Bullish Supertrend), ' +
+      'historical backtesting demonstrates a 53.0% 1-day win rate (1.80 Profit Factor) and 52.9% 3-day win rate (1.85 Profit Factor, +1.19% avg return) ' +
+      'on a curated shortlist of ~50 stocks.',
+    criteriaExplanation: [
+      'Price >= ₹50 (excludes illiquid microcaps)',
+      'Confirmations >= 7 (evaluated on numerator: 7/8 or 8/8 bullish indicators)',
+      'Setup Strength = Strong (explicitly confirmed top-tier setup)',
+      'Delivery % >= 45% (significant physical institutional holding take-up)',
+      'Supertrend Direction = Bullish (active macro uptrend)',
+      'Volume Ratio (RVOL) >= 1.5x (expanding trading participation)',
+      'Change % >= +1.5% and Close Position in Range >= 75%'
+    ],
+    rules: [
+      { field: 'close', op: '>=', value: 50 },
+      { field: 'confirmation_count', op: '>=', value: 7 },
+      { field: 'setup_strength', op: '==', value: 'Strong' },
+      { field: 'delivery_percent', op: '>=', value: 45 },
+      { field: 'supertrend_dir', op: '==', value: 1 },
+      { field: 'volume_ratio_20', op: '>=', value: 1.5 },
+      { field: 'pct_change', op: '>=', value: 1.5 },
+      { field: 'close_near_high_pct', op: '>=', value: 75 }
+    ]
+  },
   {
     id: 'btst',
     name: '⚡ BTST Surge',
@@ -1058,8 +1357,8 @@ export function evaluateItemMatchesRule(item, rule) {
   if (compareField) {
     const targetVal = item[compareField];
     if (targetVal === null || targetVal === undefined) return false;
-    const numA = Number(itemVal);
-    const numB = Number(targetVal);
+    const numA = _toNumber(itemVal);
+    const numB = _toNumber(targetVal);
     if (!isNaN(numA) && !isNaN(numB)) {
       if (op === '>') return numA > numB;
       if (op === '<') return numA < numB;
@@ -1073,7 +1372,7 @@ export function evaluateItemMatchesRule(item, rule) {
 
   // Range comparison (between)
   if (op === 'between') {
-    const num = Number(itemVal);
+    const num = _toNumber(itemVal);
     const min = Number(valueMin);
     const max = Number(valueMax);
     if (isNaN(num)) return false;
@@ -1082,8 +1381,8 @@ export function evaluateItemMatchesRule(item, rule) {
     return true;
   }
 
-  // Numeric comparison
-  const numVal = Number(itemVal);
+  // Numeric comparison (with fraction parsing for fields like confirmation_count)
+  const numVal = _toNumber(itemVal);
   const targetNum = Number(value);
 
   if (!isNaN(numVal) && !isNaN(targetNum) && value !== '' && value !== null && value !== undefined) {
@@ -1103,5 +1402,22 @@ export function evaluateItemMatchesRule(item, rule) {
   if (op === 'contains') return strA.includes(strB);
 
   return true;
+}
+
+/**
+ * Parse a value to a number, including fraction strings like "6/8" → 6.
+ * For fraction strings, returns the numerator for numeric comparisons.
+ */
+function _toNumber(val) {
+  if (val === null || val === undefined) return NaN;
+  if (typeof val === 'number') return val;
+  if (typeof val === 'string' && val.includes('/')) {
+    const parts = val.split('/');
+    if (parts.length === 2) {
+      const num = Number(parts[0].trim());
+      if (!isNaN(num)) return num;
+    }
+  }
+  return Number(val);
 }
 

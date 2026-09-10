@@ -19,6 +19,8 @@ from .portfolio import (
     PORTFOLIO_NAMES,
     display_name,
     load_portfolios,
+    load_tracker_portfolios_meta,
+    get_all_portfolio_tracker_symbols,
     tradingview_url,
 )
 
@@ -53,6 +55,30 @@ def save_snapshot(snapshot: dict[str, Any]) -> None:
     _snap_repo.save_snapshot(snapshot)
 
 
+def compute_cost_risk(price: float | None, avg_price: float | None) -> tuple[float | None, str | None]:
+    """Calculate cost drawdown percentage and risk tier against average purchase price.
+
+    Tiers:
+    - mild: 0.01% to 4.99% below avg price (drawdown in (-5.0, 0))
+    - moderate (stop-loss zone): 5.00% to 9.99% below avg price (drawdown in (-10.0, -5.0])
+    - critical: 10.00% or more below avg price (drawdown <= -10.0)
+    - None: at or above cost basis (drawdown >= 0), or missing price / avg_price.
+    """
+    if price is None or avg_price is None or avg_price <= 0:
+        return None, None
+
+    drawdown_pct = round(((price - avg_price) / avg_price) * 100.0, 2)
+    if drawdown_pct >= 0:
+        return drawdown_pct, None
+
+    if drawdown_pct > -5.0:
+        return drawdown_pct, "mild"
+    elif drawdown_pct > -10.0:
+        return drawdown_pct, "moderate"
+    else:
+        return drawdown_pct, "critical"
+
+
 def build_row(symbol: str, settings: dict[str, Any] | None = None) -> dict[str, Any]:
     """Fetch one ticker and build its table row. Never raises."""
     settings = settings or load_settings()
@@ -63,6 +89,11 @@ def build_row(symbol: str, settings: dict[str, Any] | None = None) -> dict[str, 
         "symbol": symbol,
         "display": display_name(symbol),
         "name": "",
+        "avg_price": None,
+        "cost_drawdown_pct": None,
+        "risk_tier": None,
+        "is_sourced": False,
+        "is_manual": True,
         "url": tradingview_url(symbol),
         "price": None,
         "price_display": "",
@@ -118,6 +149,29 @@ def build_row(symbol: str, settings: dict[str, Any] | None = None) -> dict[str, 
             "notes": data.notes + notes,
         }
     )
+
+    if getattr(data, "fetch_symbol", None) and data.fetch_symbol != symbol:
+        row["fetch_symbol"] = data.fetch_symbol
+        row["url"] = tradingview_url(data.fetch_symbol)
+
+    if data.price is not None and data.price > 0:
+        try:
+            from .db.repositories import quotes as _quote_repo
+            quote_payload = {
+                "price": round(data.price, decimals),
+                "currency": data.currency or "INR",
+                "name": data.name or symbol,
+            }
+            _quote_repo.save_quote(symbol, quote_payload)
+            fetch_sym = getattr(data, "fetch_symbol", None)
+            if fetch_sym and fetch_sym != symbol:
+                _quote_repo.save_quote(fetch_sym, quote_payload)
+            if "." in symbol:
+                bare = symbol.split(".")[0]
+                _quote_repo.save_quote(bare, quote_payload)
+        except Exception as exc:
+            logger.debug("Failed to cache quote for %s: %s", symbol, exc)
+
     return row
 
 
@@ -135,8 +189,13 @@ def _ema_sort_key(row: dict[str, Any]) -> tuple[int, str]:
     """Return ``(priority, display_name)`` for sorting rows.
 
     Priority 0 = below daily 200 EMA (highest), …, 4 = below daily 9 only,
-    5 = above all daily EMAs.  Ties broken alphabetically.
+    5 = above all daily EMAs.
+    6 = fetch problem / error (shown at last in table).
+    Ties broken alphabetically.
     """
+    if row.get("error") or row.get("price") is None:
+        return (len(_PRIORITY_EMAS) + 1, row.get("display", row.get("symbol", "")))
+
     emas = row.get("emas", {})
     for idx, period in enumerate(_PRIORITY_EMAS):
         cell = emas.get(str(period), {})
@@ -152,10 +211,15 @@ def refresh_portfolios(
 ) -> dict[str, Any]:
     """Refresh every ticker in both portfolios and persist the snapshot."""
     settings = load_settings()
-    portfolios = portfolios or load_portfolios()
+    port_meta = load_tracker_portfolios_meta(PORTFOLIO_NAMES)
+    if portfolios is None:
+        portfolios = {name: list(symbols.keys()) for name, symbols in port_meta.items()}
+
     max_workers = max(1, int(settings["data"].get("max_workers", 4)))
 
-    symbols = sorted({symbol for tickers in portfolios.values() for symbol in tickers})
+    tracker_symbols = {symbol for tickers in portfolios.values() for symbol in tickers}
+    pt_symbols = set(get_all_portfolio_tracker_symbols())
+    symbols = sorted(tracker_symbols | pt_symbols)
     logger.info("Refreshing %s unique ticker(s) with %s worker(s)", len(symbols), max_workers)
 
     rows_by_symbol: dict[str, dict[str, Any]] = {}
@@ -171,23 +235,38 @@ def refresh_portfolios(
     errors: list[dict[str, str]] = []
     ok_count = 0
     for name in PORTFOLIO_NAMES:
-        rows = [rows_by_symbol[symbol] for symbol in portfolios.get(name, []) if symbol in rows_by_symbol]
+        rows = []
+        for symbol in portfolios.get(name, []):
+            if symbol in rows_by_symbol:
+                row = dict(rows_by_symbol[symbol])
+                meta = port_meta.get(name, {}).get(symbol, {})
+                row["avg_price"] = meta.get("avg_price")
+                row["is_sourced"] = meta.get("is_sourced", False)
+                row["is_manual"] = meta.get("is_manual", True)
+                if meta.get("stock_name"):
+                    row["name"] = meta["stock_name"]
+                drawdown_pct, risk_tier = compute_cost_risk(row.get("price"), row.get("avg_price"))
+                row["cost_drawdown_pct"] = drawdown_pct
+                row["risk_tier"] = risk_tier
+                rows.append(row)
         rows.sort(key=_ema_sort_key)
         snapshot["portfolios"][name] = {"rows": rows}
-    for symbol, row in rows_by_symbol.items():
-        if row["error"]:
+
+    for symbol in tracker_symbols:
+        row = rows_by_symbol.get(symbol)
+        if row and row.get("error"):
             errors.append({"symbol": symbol, "message": row["error"]})
-        else:
+        elif row:
             ok_count += 1
 
     snapshot["errors"] = errors
-    snapshot["stats"] = {"total": len(symbols), "ok": ok_count, "failed": len(errors)}
+    snapshot["stats"] = {"total": len(tracker_symbols), "ok": ok_count, "failed": len(errors)}
     save_snapshot(snapshot)
 
     if publish:
         status_store.bump(
             source=source,
-            message=f"{ok_count}/{len(symbols)} ticker(s) refreshed successfully.",
+            message=f"{ok_count}/{len(tracker_symbols)} ticker(s) refreshed successfully.",
             summary=snapshot["stats"],
         )
 
@@ -200,6 +279,9 @@ def refresh_portfolios(
 
 def upsert_row(portfolio_name: str, row: dict[str, Any], source: str = "ticker-added") -> dict[str, Any]:
     """Insert/replace a single row in the stored snapshot and publish it."""
+    drawdown_pct, risk_tier = compute_cost_risk(row.get("price"), row.get("avg_price"))
+    row["cost_drawdown_pct"] = drawdown_pct
+    row["risk_tier"] = risk_tier
     snapshot = load_snapshot()
     bucket = snapshot["portfolios"].setdefault(portfolio_name, {"rows": []})
     rows = [existing for existing in bucket["rows"] if existing.get("symbol") != row["symbol"]]

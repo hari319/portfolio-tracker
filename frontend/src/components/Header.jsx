@@ -1,7 +1,37 @@
 import React from 'react';
 import { RefreshCw } from 'lucide-react';
+import { formatDateTime } from '../utils/date';
+
+const TAB_HEADERS = {
+  tracker: {
+    title: 'Portfolio and Stock Monitor',
+    subtitle: (
+      <>
+        Live NSE/BSE prices with daily &amp; weekly EMAs. A value is shown in{' '}
+        <span className="text-below-pill">red</span> only when the current price is below that EMA.
+      </>
+    ),
+  },
+  'portfolio-tracker': {
+    title: 'Portfolio Tracker',
+    subtitle: 'Detailed portfolio bookkeeping with lot-level purchase tracking, realized/unrealized P&L, dividend records, and portfolio balance sheets.',
+  },
+  status: {
+    title: 'Stock Analysis & Status',
+    subtitle: 'Valuation scenarios (Base, Bull, Bear), target prices, entry levels, and research status notes alongside live market quotes.',
+  },
+  screener: {
+    title: 'Stock Screener',
+    subtitle: 'Multi-day technical screening, strategy presets, and customizable metrics for NSE/BSE equities.',
+  },
+  'swing-tracker': {
+    title: 'Swing Tracker',
+    subtitle: 'Track swing trades, entry zones, stop losses, multiple targets, pattern breakouts, and trade sources with live price monitoring.',
+  },
+};
 
 export default function Header({
+  activeTab = 'tracker',
   generatedAt,
   source,
   stats = {},
@@ -11,21 +41,19 @@ export default function Header({
 }) {
   const formatUpdated = (iso) => {
     if (!iso) return 'No data yet — click “Refresh now”.';
-    const date = new Date(iso);
-    const timeStr = isNaN(date.getTime()) ? iso : date.toLocaleString();
+    const timeStr = formatDateTime(iso);
     return `Updated ${timeStr} ${source ? `(${source})` : ''}`;
   };
+
+  const headerContent = TAB_HEADERS[activeTab] || TAB_HEADERS.tracker;
 
   return (
     <header className="app-header">
       <div className="row align-items-center g-3">
         {/* Title and Subtitle */}
         <div className="col-12 col-md-7">
-          <h1 className="app-title">Portfolio and Stock Monitor</h1>
-          <p className="app-subtitle">
-            Live NSE/BSE prices with daily &amp; weekly EMAs. A value is shown in{' '}
-            <span className="text-below-pill">red</span> only when the current price is below that EMA.
-          </p>
+          <h1 className="app-title">{headerContent.title}</h1>
+          <p className="app-subtitle">{headerContent.subtitle}</p>
         </div>
 
         {/* Refresh button and metadata (only shown on Tracker tab) */}

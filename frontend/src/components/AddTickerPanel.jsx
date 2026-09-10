@@ -31,9 +31,10 @@ export default function AddTickerPanel({
 
         if (rowSymbol === normalized || rowSymbol === raw || baseRow === baseRaw) {
           if (pName === selectedPortfolio) {
+            const sourcedText = row.is_sourced ? ' (from Portfolio Tracker)' : '';
             return {
               type: 'warning',
-              message: `⚠️ ${normalized} is already in ${pName}.`,
+              message: `⚠️ ${normalized} is already in ${pName}${sourcedText}.`,
             };
           } else {
             return {

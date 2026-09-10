@@ -20,6 +20,7 @@ from stockmon.service import refresh_portfolios
 from stockmon.db import open_database, open_screener_cache
 from stockmon.db.backup import create_backup, rotate_backups
 from stockmon.db.repositories.screener import prune_old_dates
+from stockmon.swing_tracker import refresh_all_swing_trade_prices
 
 logger = logging.getLogger("stockmon.scheduled_run")
 
@@ -80,6 +81,17 @@ def main() -> int:
         stats["failed"],
         stats["total"],
     )
+
+    # Auto-refresh prices for all swing trades (once daily at 9:30 and scheduled runs)
+    try:
+        swing_stats = refresh_all_swing_trade_prices()
+        logger.info(
+            "Swing Tracker prices refreshed: %s/%s updated",
+            swing_stats.get("updated", 0),
+            swing_stats.get("total", 0),
+        )
+    except Exception as exc:
+        logger.warning("Could not auto-refresh swing trade prices: %s", exc)
 
     # 1. Prune screener data older than retention setting (§5.3)
     try:

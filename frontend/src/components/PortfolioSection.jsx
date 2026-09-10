@@ -8,10 +8,12 @@ export default function PortfolioSection({
   periods = [9, 21, 50, 100, 200],
   onRemoveTicker,
   disabled = false,
+  searchQuery = '',
 }) {
   const [isCollapsed, setIsCollapsed] = useState(false);
   const rows = portfolioData.rows || [];
   const count = rows.length;
+  const totalCount = portfolioData.totalCount !== undefined ? portfolioData.totalCount : count;
 
   return (
     <section className="dashboard-card mb-4" id={`portfolio-${name}`}>
@@ -19,7 +21,9 @@ export default function PortfolioSection({
         <div className="d-flex align-items-center gap-2">
           <h2 className="portfolio-name">{name}</h2>
           <span className="portfolio-count-pill">
-            {count} ticker{count === 1 ? '' : 's'}
+            {totalCount !== count
+              ? `${count} of ${totalCount} ticker${totalCount === 1 ? '' : 's'}`
+              : `${count} ticker${count === 1 ? '' : 's'}`}
           </span>
         </div>
 
@@ -52,6 +56,7 @@ export default function PortfolioSection({
             periods={periods}
             onRemoveTicker={onRemoveTicker}
             disabled={disabled}
+            searchQuery={searchQuery}
           />
         </div>
       )}

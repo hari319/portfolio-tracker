@@ -29,37 +29,54 @@ def save_quote_to_cache(symbol: str, quote: dict[str, Any]) -> None:
 
 
 def fetch_ticker_quote(symbol: str) -> dict[str, Any]:
-    """Fetch live quote for a symbol with strictly max 2 total attempts and persistent caching."""
+    """Fetch live quote for a symbol with alternate exchange fallback and persistent caching."""
     live_price = None
     currency = "INR"
     name = ""
+    actual_symbol = symbol
 
-    # Attempt 1: Fast live price
-    try:
-        live_price, cur, nm = fetch_live_price(symbol)
-        if cur:
-            currency = cur
-        if nm:
-            name = nm
-    except Exception as exc:
-        logger.info("Attempt 1 failed for %s: %s", symbol, exc)
-
-    # Attempt 2: Fallback to last close from daily history if live price was not found
-    if live_price is None or live_price <= 0:
+    def _attempt_fetch(sym: str) -> tuple[float | None, str | None, str]:
+        lp, cur, nm = None, None, ""
         try:
-            daily = fetch_daily_history(symbol, period="5d", retries=1)
-            if not daily.empty and "Close" in daily.columns:
-                live_price = float(daily["Close"].iloc[-1])
+            lp, cur, nm = fetch_live_price(sym)
         except Exception as exc:
-            logger.info("Attempt 2 (daily close fallback) failed for %s: %s", symbol, exc)
+            logger.info("Live price attempt failed for %s: %s", sym, exc)
+        if lp is None or lp <= 0:
+            try:
+                daily = fetch_daily_history(sym, period="5d", retries=1)
+                if not daily.empty and "Close" in daily.columns:
+                    lp = float(daily["Close"].iloc[-1])
+            except Exception as exc:
+                logger.info("Daily close fallback failed for %s: %s", sym, exc)
+        return lp, cur, nm
+
+    live_price, cur, nm = _attempt_fetch(symbol)
+    if cur:
+        currency = cur
+    if nm:
+        name = nm
+
+    # If primary exchange failed, try alternate exchange (.NS ↔ .BO)
+    alt_symbol = _alternate_symbol(symbol)
+    if (live_price is None or live_price <= 0) and alt_symbol:
+        logger.info("Primary quote fetch failed for %s; trying alternate %s", symbol, alt_symbol)
+        alt_lp, alt_cur, alt_nm = _attempt_fetch(alt_symbol)
+        if alt_lp is not None and alt_lp > 0:
+            live_price = alt_lp
+            actual_symbol = alt_symbol
+            if alt_cur:
+                currency = alt_cur
+            if alt_nm:
+                name = alt_nm
 
     now_iso = datetime.now().strftime("%Y-%m-%d %H:%M")
 
     # If fetch succeeded:
     if live_price is not None and live_price > 0:
         quote = {
-            "symbol": symbol,
-            "name": name or symbol,
+            "symbol": actual_symbol,
+            "requested_symbol": symbol,
+            "name": name or actual_symbol,
             "price": round(live_price, 2),
             "currency": currency or "INR",
             "as_of": now_iso,
@@ -67,17 +84,22 @@ def fetch_ticker_quote(symbol: str) -> dict[str, Any]:
         }
         try:
             save_quote_to_cache(symbol, quote)
+            if actual_symbol != symbol:
+                save_quote_to_cache(actual_symbol, quote)
+            if "." in actual_symbol:
+                save_quote_to_cache(actual_symbol.split(".")[0], quote)
         except Exception as exc:
             logger.warning("Could not save quote to cache: %s", exc)
         return quote
 
     # If fetch failed: Check cached quotes
     cache = load_quotes_cache()
-    if symbol in cache and cache[symbol].get("price") is not None:
-        cached = dict(cache[symbol])
-        cached["is_cached"] = True
-        logger.info("Using cached quote for %s: %s", symbol, cached)
-        return cached
+    for s in (symbol, alt_symbol, symbol.split(".")[0] if "." in symbol else None):
+        if s and s in cache and cache[s].get("price") is not None:
+            cached = dict(cache[s])
+            cached["is_cached"] = True
+            logger.info("Using cached quote for %s: %s", symbol, cached)
+            return cached
 
     raise DataFetchError(symbol, f"Could not fetch price for {symbol}.")
 
@@ -94,6 +116,7 @@ class TickerData:
     daily: pd.DataFrame
     weekly: pd.DataFrame = field(default_factory=pd.DataFrame)
     notes: list[str] = field(default_factory=list)
+    fetch_symbol: str = ""
 
 
 def _import_yfinance():
@@ -190,6 +213,8 @@ def _alternate_symbol(symbol: str) -> str | None:
     for suffix, alt_suffix in _EXCHANGE_PAIRS.items():
         if symbol.endswith(suffix):
             return symbol[: -len(suffix)] + alt_suffix
+    if "." not in symbol and not symbol.startswith("^"):
+        return f"{symbol}.BO"
     return None
 
 
@@ -201,19 +226,40 @@ def get_ticker_data(
 ) -> TickerData:
     """Fetch history + live price and return a :class:`TickerData` bundle.
 
-    If the primary exchange provides fewer than :data:`AUTO_SWITCH_MIN_BARS`
-    daily bars, the alternate exchange (``.NS`` ↔ ``.BO``) is tried
-    automatically.  Whichever exchange supplies more history is used.
+    If the primary exchange fails (e.g. .NS has no data or is delisted) or provides fewer than
+    :data:`AUTO_SWITCH_MIN_BARS` daily bars, the alternate exchange (.NS ↔ .BO) is tried
+    automatically. Whichever exchange supplies valid/more history is used.
     """
     from .ema import resample_weekly  # local import keeps module import order simple
 
-    daily = fetch_daily_history(symbol, period=period, retries=retries, backoff_seconds=backoff_seconds)
-    notes: list[str] = []
-
-    # --- auto-switch: try the other exchange if history is thin ---------------
-    fetch_symbol = symbol  # symbol actually used for live price / notes
+    fetch_symbol = symbol
     alt_symbol = _alternate_symbol(symbol)
-    if alt_symbol and len(daily) < AUTO_SWITCH_MIN_BARS:
+    notes: list[str] = []
+    daily = None
+
+    try:
+        daily = fetch_daily_history(symbol, period=period, retries=retries, backoff_seconds=backoff_seconds)
+    except DataFetchError as exc:
+        if alt_symbol:
+            logger.info(
+                "Primary exchange failed for %s (%s); trying alternate exchange %s",
+                symbol, exc.message, alt_symbol,
+            )
+            try:
+                daily = fetch_daily_history(
+                    alt_symbol, period=period, retries=retries, backoff_seconds=backoff_seconds
+                )
+                fetch_symbol = alt_symbol
+                notes.append(
+                    f"Symbol {symbol} not available on primary exchange; using {alt_symbol} data."
+                )
+            except DataFetchError:
+                raise exc
+        else:
+            raise
+
+    # --- auto-switch: try the other exchange if history is thin (< AUTO_SWITCH_MIN_BARS) ---
+    if alt_symbol and fetch_symbol == symbol and len(daily) < AUTO_SWITCH_MIN_BARS:
         try:
             alt_daily = fetch_daily_history(
                 alt_symbol, period=period, retries=retries, backoff_seconds=backoff_seconds
@@ -260,6 +306,7 @@ def get_ticker_data(
         daily=daily,
         weekly=weekly,
         notes=notes,
+        fetch_symbol=fetch_symbol,
     )
 
 
@@ -269,4 +316,11 @@ def symbol_exists(symbol: str) -> bool:
         fetch_daily_history(symbol, period="1mo", retries=1)
         return True
     except DataFetchError:
+        alt = _alternate_symbol(symbol)
+        if alt:
+            try:
+                fetch_daily_history(alt, period="1mo", retries=1)
+                return True
+            except DataFetchError:
+                return False
         return False

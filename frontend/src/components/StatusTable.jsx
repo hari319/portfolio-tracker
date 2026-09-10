@@ -9,6 +9,8 @@ import {
   ChevronDown,
   ChevronUp,
 } from 'lucide-react';
+import { formatDate } from '../utils/date';
+
 
 const calculateDiffPercent = (current, reference) => {
   if (
@@ -150,14 +152,17 @@ export default function StatusTable({
     if (isNaN(date.getTime())) {
       return isoStr;
     }
-    return date.toLocaleString('en-IN', {
-      day: 'numeric',
-      month: 'short',
+    const d = String(date.getDate()).padStart(2, '0');
+    const m = String(date.getMonth() + 1).padStart(2, '0');
+    const y = date.getFullYear();
+    const t = date.toLocaleTimeString([], {
       hour: '2-digit',
       minute: '2-digit',
       hour12: false,
     });
+    return `${d}/${m}/${y} ${t}`;
   };
+
 
   const renderScenarioTarget = (pair, typeClass) => {
     if (!pair || (!pair[0] && !pair[1])) {
@@ -346,7 +351,7 @@ export default function StatusTable({
                               key={hist.id}
                               value={hist.id}
                             >
-                              {hist.date_of_analysis || 'No Date'}{' '}
+                              {formatDate(hist.date_of_analysis)}{' '}
                               {idx === 0 ? '★ Latest' : ''}
                             </option>
                           ))}
@@ -360,10 +365,11 @@ export default function StatusTable({
                         className='text-muted opacity-75 me-1'
                       />
                       <span className='analysis-date-val'>
-                        {activeItem.date_of_analysis || '—'}
+                        {formatDate(activeItem.date_of_analysis)}
                       </span>
                     </div>
                   )}
+
                 </td>
 
                 {/* Status Column */}
@@ -397,8 +403,9 @@ export default function StatusTable({
                       </span>
                       {renderPriceDiffPill(
                         currentPriceDiff,
-                        `Change since analysis on ${activeItem.date_of_analysis}`,
+                        `Change since analysis on ${formatDate(activeItem.date_of_analysis)}`,
                       )}
+
                     </div>
 
                     {/* Date and time below price */}
@@ -476,8 +483,9 @@ export default function StatusTable({
                     <button
                       type='button'
                       className='action-del-btn'
-                      title={`Delete this analysis entry (${activeItem.date_of_analysis})`}
+                      title={`Delete this analysis entry (${formatDate(activeItem.date_of_analysis)})`}
                       disabled={disabled}
+
                       onClick={() =>
                         onDeleteItem(activeItem.id, activeItem.symbol)
                       }

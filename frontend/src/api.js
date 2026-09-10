@@ -194,3 +194,133 @@ export async function syncScreenerHistory(maxDays = 11, targetDates = null) {
 export async function fetchMultiDayAnalysis(maxDays = 11) {
   return request(`/api/screener/multi-day-analysis?max_days=${maxDays}`);
 }
+
+// ---------------------------------------------------------------------------
+// Portfolio Tracker API
+// ---------------------------------------------------------------------------
+
+export async function fetchPortfolioTracker(portfolio) {
+  return request(`/api/portfolio-tracker/${encodeURIComponent(portfolio)}`);
+}
+
+export async function addPortfolioHolding(data) {
+  return sendJson('/api/portfolio-tracker/holding', 'POST', data);
+}
+
+export async function addPortfolioLot(data) {
+  return sendJson('/api/portfolio-tracker/lot', 'POST', data);
+}
+
+export async function deletePortfolioHolding(holdingId) {
+  return request(`/api/portfolio-tracker/holding/${holdingId}`, { method: 'DELETE' });
+}
+
+export async function deletePortfolioLot(lotId) {
+  return request(`/api/portfolio-tracker/lot/${lotId}`, { method: 'DELETE' });
+}
+
+export async function updatePortfolioLot(lotId, data) {
+  return sendJson(`/api/portfolio-tracker/lot/${lotId}`, 'PUT', data);
+}
+
+export async function updatePortfolioHolding(holdingId, data) {
+  return sendJson(`/api/portfolio-tracker/holding/${holdingId}`, 'PUT', data);
+}
+
+export async function updatePortfolioSold(holdingId, data) {
+  return sendJson(`/api/portfolio-tracker/sold/${holdingId}`, 'PUT', data);
+}
+
+export async function sellPortfolioHolding(data) {
+  return sendJson('/api/portfolio-tracker/sell', 'POST', data);
+}
+
+export async function swapPortfolioHoldings(data) {
+  return sendJson('/api/portfolio-tracker/swap', 'POST', data);
+}
+
+export async function updatePortfolioNotes(holdingId, notes) {
+  return sendJson(`/api/portfolio-tracker/notes/${holdingId}`, 'PUT', notes);
+}
+
+export async function fetchPortfolioMistakes() {
+  return request('/api/portfolio-tracker/mistakes');
+}
+
+export async function addPortfolioDividend(data) {
+  return sendJson('/api/portfolio-tracker/dividend', 'POST', data);
+}
+
+export async function deletePortfolioDividend(dividendId) {
+  return request(`/api/portfolio-tracker/dividend/${dividendId}`, { method: 'DELETE' });
+}
+
+export async function fetchPortfolioSummary() {
+  return request('/api/portfolio-tracker/summary');
+}
+
+export async function updatePortfolioSummary(key, value, label) {
+  return sendJson('/api/portfolio-tracker/summary', 'PUT', { key, value, label });
+}
+
+export async function importPortfolioWorkbook(file = null, replace = false) {
+  const url = `/api/portfolio-tracker/import?replace=${replace ? 'true' : 'false'}`;
+  if (file) {
+    const formData = new FormData();
+    formData.append('file', file);
+    const res = await fetch(url, { method: 'POST', body: formData });
+    return res.json();
+  }
+  return request(url, { method: 'POST' });
+}
+
+export async function lookupTicker(symbol) {
+  return request(`/api/portfolio-tracker/lookup-ticker?symbol=${encodeURIComponent(symbol)}`);
+}
+
+export function getExportUrl(portfolio = '', format = 'xlsx') {
+  const p = portfolio ? `portfolio=${encodeURIComponent(portfolio)}&` : '';
+  return `/api/portfolio-tracker/export?${p}format=${encodeURIComponent(format)}`;
+}
+
+// ---------------------------------------------------------------------------
+// Swing Tracker API
+// ---------------------------------------------------------------------------
+
+export async function fetchSwingTracker() {
+  return request('/api/swing-tracker');
+}
+
+export async function addSwingTrade(data) {
+  return sendJson('/api/swing-tracker', 'POST', data);
+}
+
+export async function updateSwingTrade(id, data) {
+  return sendJson(`/api/swing-tracker/${encodeURIComponent(id)}`, 'PUT', data);
+}
+
+export async function deleteSwingTrade(id) {
+  return request(`/api/swing-tracker/${encodeURIComponent(id)}`, { method: 'DELETE' });
+}
+
+export async function refreshSwingTradePrice(id) {
+  return sendJson(`/api/swing-tracker/${encodeURIComponent(id)}/refresh-price`, 'POST', {});
+}
+
+export async function refreshAllSwingTradePrices() {
+  return sendJson('/api/swing-tracker/refresh-all', 'POST', {});
+}
+
+export async function fetchSwingSources() {
+  return request('/api/swing-tracker/sources');
+}
+
+export async function addSwingSource(name) {
+  return sendJson('/api/swing-tracker/sources', 'POST', { name });
+}
+
+export async function lookupSwingTicker(symbol) {
+  return request(`/api/swing-tracker/lookup-ticker?symbol=${encodeURIComponent(symbol)}`);
+}
+
+

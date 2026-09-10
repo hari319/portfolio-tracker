@@ -65,6 +65,8 @@ def main() -> None:
         # ---------- desktop window mode ----------
         import webview
 
+        webview.settings["ALLOW_DOWNLOADS"] = True
+
         logger.info("Starting web UI on http://%s:%s (desktop window)", args.host, args.port)
 
         # Start Flask in a daemon thread so it stops when the window is closed.
@@ -82,6 +84,8 @@ def main() -> None:
             f"http://{args.host}:{args.port}",
             width=1200,
             height=800,
+            text_select=True,
+            maximized=True,
         )
         webview.start()
 
