@@ -20,7 +20,11 @@ import {
   ArrowUp,
   ArrowDown,
   Sparkles,
-  Database
+  Database,
+  HardDrive,
+  Download,
+  Copy,
+  Check
 } from 'lucide-react';
 import * as api from '../api';
 import ScreenerFilterPanel from './ScreenerFilterPanel';
@@ -75,6 +79,12 @@ export default function ScreenerTab({ showToast }) {
   const [nonceInfo, setNonceInfo] = useState(null);
   const [showManualNonce, setShowManualNonce] = useState(false);
   const [multiDaySummary, setMultiDaySummary] = useState(null);
+
+  // Screener Backup state
+  const [isBackingUp, setIsBackingUp] = useState(false);
+  const [backupResult, setBackupResult] = useState(null);
+  const [copiedPath, setCopiedPath] = useState(false);
+
 
   // Screener Data & Saved Dates
   const [screenerData, setScreenerData] = useState(null);
@@ -239,6 +249,42 @@ export default function ScreenerTab({ showToast }) {
       setIsAutoDetecting(false);
     }
   };
+
+  // Screener Manual Backup handler
+  const handleCreateBackup = async () => {
+    setIsBackingUp(true);
+    try {
+      const res = await api.backupScreener();
+      if (res && res.ok) {
+        setBackupResult(res);
+        if (showToast) showToast(`Screener backup created: ${res.filename} (${res.size_mb} MB)`, false);
+      } else {
+        setErrorModal({
+          title: 'Screener Backup Failed',
+          message: res?.error || 'Failed to create screener database backup.'
+        });
+      }
+    } catch (err) {
+      console.error('Screener backup error:', err);
+      setErrorModal({
+        title: 'Screener Backup Error',
+        message: err.message || 'An error occurred while creating screener backup.'
+      });
+    } finally {
+      setIsBackingUp(false);
+    }
+  };
+
+  const handleCopyPath = async (textToCopy) => {
+    try {
+      await navigator.clipboard.writeText(textToCopy);
+      setCopiedPath(true);
+      setTimeout(() => setCopiedPath(false), 2000);
+    } catch (err) {
+      console.error('Failed to copy path:', err);
+    }
+  };
+
 
   // Switch to a previously saved local date
   const handleSwitchSavedDate = async (dateStr) => {
@@ -667,6 +713,21 @@ export default function ScreenerTab({ showToast }) {
           </div>
 
           <div className="d-flex align-items-center gap-2">
+            <button
+              type="button"
+              className="btn btn-sm btn-outline-secondary d-flex align-items-center gap-1"
+              onClick={handleCreateBackup}
+              disabled={isBackingUp}
+              title="Create a manual backup snapshot of the screener database"
+            >
+              {isBackingUp ? (
+                <RefreshCw size={14} className="spin-anim text-primary" />
+              ) : (
+                <HardDrive size={14} />
+              )}
+              <span>{isBackingUp ? 'Backing up...' : 'Backup'}</span>
+            </button>
+
             <button
               type="button"
               className={`btn btn-sm ${showManualNonce ? 'btn-secondary' : 'btn-outline-secondary'} d-flex align-items-center gap-1`}
@@ -1207,6 +1268,85 @@ export default function ScreenerTab({ showToast }) {
             <p className="loading-subtitle text-muted mb-0">
               Querying market dataset ({selectedDate || 'Latest / Today'})... This may take a few moments.
             </p>
+          </div>
+        </div>
+      )}
+
+      {/* Screener Backup Success / Info Modal */}
+      {backupResult && (
+        <div className="modal-backdrop-custom" role="dialog" aria-modal="true">
+          <div className="modal-dialog-custom shadow-lg" style={{ maxWidth: '540px' }}>
+            <div className="modal-header-custom border-bottom pb-2 d-flex align-items-center justify-content-between">
+              <div className="d-flex align-items-center gap-2 text-success">
+                <HardDrive size={20} />
+                <h6 className="modal-title mb-0 fw-bold">Screener Backup Created</h6>
+              </div>
+              <button
+                type="button"
+                className="btn-close"
+                onClick={() => setBackupResult(null)}
+              ></button>
+            </div>
+            <div className="modal-body-custom py-3">
+              <div className="alert alert-success-subtle border border-success-subtle d-flex align-items-center gap-2 p-2 mb-3 rounded-2 small text-success">
+                <CheckCircle2 size={16} />
+                <span>Successfully generated a standalone snapshot of the screener database.</span>
+              </div>
+
+              <div className="table-responsive mb-3">
+                <table className="table table-sm table-bordered mb-0 small">
+                  <tbody>
+                    <tr>
+                      <th className="bg-light text-muted text-nowrap" style={{ width: '120px' }}>Filename</th>
+                      <td className="fw-mono fw-semibold text-dark">{backupResult.filename}</td>
+                    </tr>
+                    <tr>
+                      <th className="bg-light text-muted text-nowrap">File Size</th>
+                      <td className="fw-semibold text-dark">{backupResult.size_mb} MB</td>
+                    </tr>
+                    <tr>
+                      <th className="bg-light text-muted text-nowrap">Full Path</th>
+                      <td>
+                        <div className="d-flex align-items-center justify-content-between gap-2">
+                          <code className="text-break small" style={{ fontSize: '0.78rem' }}>{backupResult.path}</code>
+                          <button
+                            type="button"
+                            className="btn btn-xs btn-outline-secondary d-inline-flex align-items-center gap-1 text-nowrap"
+                            style={{ fontSize: '0.75rem', padding: '2px 6px' }}
+                            onClick={() => handleCopyPath(backupResult.path)}
+                            title="Copy full path to clipboard"
+                          >
+                            {copiedPath ? <Check size={12} className="text-success" /> : <Copy size={12} />}
+                            <span>{copiedPath ? 'Copied!' : 'Copy'}</span>
+                          </button>
+                        </div>
+                      </td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+
+              <p className="text-muted small mb-0">
+                You can download this backup directly to your machine or leave it safely stored in your project&apos;s <code>backups/</code> directory.
+              </p>
+            </div>
+            <div className="modal-footer-custom border-top pt-2 d-flex justify-content-between align-items-center">
+              <a
+                href={api.getScreenerBackupDownloadUrl(backupResult.filename)}
+                download={backupResult.filename}
+                className="btn btn-sm btn-primary d-inline-flex align-items-center gap-1 px-3"
+              >
+                <Download size={14} />
+                <span>Download Backup</span>
+              </a>
+              <button
+                type="button"
+                className="btn btn-sm btn-outline-secondary px-3"
+                onClick={() => setBackupResult(null)}
+              >
+                Close
+              </button>
+            </div>
           </div>
         </div>
       )}

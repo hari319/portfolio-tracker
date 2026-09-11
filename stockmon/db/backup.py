@@ -15,10 +15,11 @@ import gzip
 import hashlib
 import json
 import logging
+import re
 import shutil
 import sqlite3
 import tempfile
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -92,13 +93,7 @@ def create_backup(
                 pass
         check.close()
 
-    # 4. Also copy settings.json alongside the backup (§6.0)
-    settings_src = paths.SETTINGS_FILE
-    if settings_src.exists():
-        settings_dst = backup_dir / f"settings-{stamp}.json"
-        shutil.copy2(settings_src, settings_dst)
-
-    # 5. Append to manifest
+    # 4. Append to manifest
     _append_manifest(backup_dir, final, db_path, stamp,
                      uncompressed_size, sha256, user_version, counts)
 
@@ -143,18 +138,85 @@ def _append_manifest(
     )
 
 
+def parse_backup_timestamp(filename: str) -> datetime | None:
+    """Extract datetime from backup filename (supports standard, legacy, and date-only formats)."""
+    # 1. Standard format: YYYY-MM-DD_HHMMSS
+    m = re.search(r"(\d{4}-\d{2}-\d{2})_(\d{2})(\d{2})(\d{2})", filename)
+    if m:
+        try:
+            return datetime.strptime(f"{m.group(1)}_{m.group(2)}{m.group(3)}{m.group(4)}", "%Y-%m-%d_%H%M%S")
+        except ValueError:
+            pass
+    # 2. Legacy format: YYYYMMDD_HHMMSS
+    m2 = re.search(r"(\d{4})(\d{2})(\d{2})_(\d{2})(\d{2})(\d{2})", filename)
+    if m2:
+        try:
+            return datetime.strptime(f"{m2.group(1)}-{m2.group(2)}-{m2.group(3)}_{m2.group(4)}{m2.group(5)}{m2.group(6)}", "%Y-%m-%d_%H%M%S")
+        except ValueError:
+            pass
+    # 3. Date only: YYYY-MM-DD
+    m3 = re.search(r"(\d{4}-\d{2}-\d{2})", filename)
+    if m3:
+        try:
+            return datetime.strptime(m3.group(1), "%Y-%m-%d")
+        except ValueError:
+            pass
+    return None
+
+
+def prune_manifest(backup_dir: Path, cutoff: datetime | None = None) -> int:
+    """Prune manifest entries that are older than cutoff or whose files no longer exist on disk."""
+    manifest_path = backup_dir / "manifest.json"
+    if not manifest_path.exists():
+        return 0
+
+    try:
+        entries = json.loads(manifest_path.read_text(encoding="utf-8"))
+        if not isinstance(entries, list):
+            return 0
+    except (json.JSONDecodeError, OSError):
+        return 0
+
+    retained = []
+    removed = 0
+    for e in entries:
+        fname = e.get("filename")
+        if not fname:
+            removed += 1
+            continue
+        file_path = backup_dir / fname
+        if not file_path.exists():
+            removed += 1
+            continue
+        if cutoff:
+            ts_str = e.get("timestamp")
+            dt = parse_backup_timestamp(ts_str or fname)
+            if dt and dt < cutoff:
+                removed += 1
+                continue
+        retained.append(e)
+
+    if removed > 0 or len(retained) != len(entries):
+        manifest_path.write_text(
+            json.dumps(retained, indent=2, ensure_ascii=False),
+            encoding="utf-8",
+        )
+    return removed
+
+
 def rotate_backups(
     backup_dir: Path | None = None,
-    keep_daily: int = 7,
-    keep_edit: int = 7,
-    keep_weekly: int = 4,
-    keep_monthly: int = 2,
-    keep_pre_migration: int = 2,
+    retention_days: int = 5,
+    max_backups: int = 5,
+    *args: Any,
+    **kwargs: Any,
 ) -> int:
-    """Apply rotation to backup files.
+    """Apply retention policy to backup files.
 
-    Keeps the most recent ``keep_daily`` (default 7 = 1 week) backup files.
-    Older backups and their settings files are deleted automatically.
+    1. Removes all settings-*.json files (settings backups are disabled).
+    2. Removes backups older than ``retention_days`` (default: 5 days).
+    3. Strictly enforces ``max_backups`` (default: 5 files) so there are never more than 5 stockmon files.
+    4. Synchronizes manifest.json with retained backups on disk.
 
     Returns the number of files deleted.
     """
@@ -162,26 +224,148 @@ def rotate_backups(
     if not backup_dir.exists():
         return 0
 
-    gz_files = sorted(backup_dir.glob("stockmon-*.db.gz"), reverse=True)
-    keep_total = max(keep_daily, 7)  # keep 7 (1 week)
-
-    to_delete = gz_files[keep_total:]
     deleted = 0
-    for f in to_delete:
+
+    # 1. Purge all settings-*.json files (settings backups are disabled)
+    for sf in backup_dir.glob("settings-*.json"):
         try:
-            f.unlink()
-            # Also clean up corresponding settings file
-            settings_stamp = f.stem.replace("stockmon-", "settings-").replace(".db", "")
-            settings_file = backup_dir / f"{settings_stamp}.json"
-            if settings_file.exists():
-                settings_file.unlink()
+            sf.unlink()
             deleted += 1
         except OSError as exc:
-            logger.warning("Could not delete old backup %s: %s", f, exc)
+            logger.warning("Could not delete settings file %s: %s", sf, exc)
+
+    # 2. Gather stockmon backup files
+    patterns = [
+        "stockmon-*.db.gz",
+        "stockmon_pre_ticker_update_*.db",
+        "*.db.gz",
+    ]
+    seen_files = set()
+    stockmon_files = []
+    for pat in patterns:
+        for f in backup_dir.glob(pat):
+            if f.name != "manifest.json" and f not in seen_files:
+                seen_files.add(f)
+                stockmon_files.append(f)
+
+    # Parse timestamps and sort newest first
+    file_dt_pairs = []
+    for f in stockmon_files:
+        dt = parse_backup_timestamp(f.name)
+        if dt is None:
+            try:
+                dt = datetime.fromtimestamp(f.stat().st_mtime)
+            except OSError:
+                dt = datetime.min
+        file_dt_pairs.append((f, dt))
+
+    # Sort descending (newest first)
+    file_dt_pairs.sort(key=lambda pair: pair[1], reverse=True)
+
+    cutoff = datetime.now() - timedelta(days=retention_days)
+
+    # 3. Retain at most max_backups that are within the retention window
+    retained_count = 0
+    for f, dt in file_dt_pairs:
+        # If older than retention cutoff OR already reached max_backups limit:
+        if (dt and dt < cutoff) or retained_count >= max_backups:
+            try:
+                f.unlink()
+                deleted += 1
+            except OSError as exc:
+                logger.warning("Could not delete old backup %s: %s", f, exc)
+        else:
+            retained_count += 1
+
+    # 4. Prune screener subfolder if it exists
+    screener_dir = backup_dir / "screener"
+    if screener_dir.exists():
+        for sf in screener_dir.glob("*"):
+            s_dt = parse_backup_timestamp(sf.name)
+            if s_dt is None:
+                try:
+                    s_dt = datetime.fromtimestamp(sf.stat().st_mtime)
+                except OSError:
+                    s_dt = None
+            if s_dt and s_dt < cutoff:
+                try:
+                    sf.unlink()
+                    deleted += 1
+                except OSError:
+                    pass
+
+    # 5. Synchronize manifest.json with the files that actually remain
+    prune_manifest(backup_dir, cutoff=cutoff)
 
     if deleted:
-        logger.info("Rotated %d old backup(s)", deleted)
+        logger.info("Rotated %d old backup file(s); retained %d", deleted, retained_count)
     return deleted
+
+
+def create_screener_backup(
+    screener_db_path: Path | None = None,
+    backup_dir: Path | None = None,
+) -> dict[str, Any]:
+    """Create a verified, compressed backup of the Screener database (screener_cache.db).
+
+    Returns metadata dictionary including path, filename, size, and timestamp.
+    """
+    screener_db_path = screener_db_path or paths.SCREENER_DB_FILE
+    if not screener_db_path.exists():
+        raise FileNotFoundError(f"Screener database not found at {screener_db_path}")
+
+    base_backup_dir = backup_dir or paths.BACKUP_DIR
+    screener_backup_dir = base_backup_dir / "screener"
+    screener_backup_dir.mkdir(parents=True, exist_ok=True)
+
+    stamp = datetime.now().strftime("%Y-%m-%d_%H%M%S")
+    final_gz = screener_backup_dir / f"screener-{stamp}.db.gz"
+
+    with tempfile.TemporaryDirectory() as tmp:
+        temp_db = Path(tmp) / "screener_snapshot.db"
+        # 1. Use SQLite Online Backup API
+        src_conn = sqlite3.connect(str(screener_db_path))
+        dst_conn = sqlite3.connect(str(temp_db))
+        try:
+            src_conn.backup(dst_conn)
+        finally:
+            dst_conn.close()
+            src_conn.close()
+
+        # 2. Check integrity
+        chk = sqlite3.connect(str(temp_db))
+        res = chk.execute("PRAGMA integrity_check").fetchone()[0]
+        chk.close()
+        if res != "ok":
+            raise RuntimeError(f"Screener backup failed integrity check: {res}")
+
+        uncompressed_size = temp_db.stat().st_size
+
+        # 3. Compress with gzip
+        with open(temp_db, "rb") as f_in, gzip.open(final_gz, "wb", compresslevel=6) as f_out:
+            shutil.copyfileobj(f_in, f_out)
+
+    # 4. Also copy screener_cache.json if present
+    if paths.SCREENER_CACHE_FILE.exists():
+        settings_dst = screener_backup_dir / f"screener_cache-{stamp}.json"
+        shutil.copy2(paths.SCREENER_CACHE_FILE, settings_dst)
+
+    # 5. Apply 5-day retention
+    rotate_backups(backup_dir=base_backup_dir, retention_days=5)
+
+    compressed_size = final_gz.stat().st_size
+    size_mb = round(compressed_size / (1024 * 1024), 2)
+    logger.info("Screener backup created: %s (%.2f MB compressed)", final_gz.name, size_mb)
+
+    return {
+        "filename": final_gz.name,
+        "path": str(final_gz.resolve()),
+        "directory": str(screener_backup_dir.resolve()),
+        "size_bytes": compressed_size,
+        "size_mb": size_mb,
+        "uncompressed_size_bytes": uncompressed_size,
+        "timestamp": stamp,
+    }
 
 
 def list_backups(backup_dir: Path | None = None) -> list[dict[str, Any]]:

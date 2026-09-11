@@ -147,7 +147,7 @@ def test_api_update_holding_with_ticker_lookup_and_resolution(clean_tracker, mon
 
     # Mock _resolve_ticker to return a known resolution
     monkeypatch.setattr(
-        "stockmon.web.routes._resolve_ticker",
+        "stockmon.web.routes.portfolio_tracker._resolve_ticker",
         lambda sym: {"symbol": f"{sym}.NS", "name": "Tata Consultancy Services Limited", "price": 3800.0, "found": True}
         if sym == "TCS" else {"symbol": sym, "name": "", "price": None, "found": False}
     )
@@ -182,7 +182,7 @@ def test_api_update_holding_manual_name_confirmed(clean_tracker, monkeypatch):
 
     # Unrecognized ticker returns found: False
     monkeypatch.setattr(
-        "stockmon.web.routes._resolve_ticker",
+        "stockmon.web.routes.portfolio_tracker._resolve_ticker",
         lambda sym: {"symbol": sym, "name": "", "price": None, "found": False}
     )
 
@@ -223,7 +223,7 @@ def test_api_update_sold_with_ticker_resolution(clean_tracker, monkeypatch):
     sold_id = sold_list[0]["id"]
 
     monkeypatch.setattr(
-        "stockmon.web.routes._resolve_ticker",
+        "stockmon.web.routes.portfolio_tracker._resolve_ticker",
         lambda sym: {"symbol": f"{sym}.NS", "name": "Infosys Limited", "price": 1500.0, "found": True}
         if sym == "INFY" else {"symbol": sym, "name": "", "price": None, "found": False}
     )
@@ -258,7 +258,7 @@ def test_api_lookup_ticker_route(clean_tracker, monkeypatch):
     client = app.test_client()
 
     monkeypatch.setattr(
-        "stockmon.web.routes._resolve_ticker",
+        "stockmon.web.routes.portfolio_tracker._resolve_ticker",
         lambda sym: {"symbol": "RELIANCE.NS", "name": "Reliance Industries Limited", "price": 2900.0, "found": True}
         if sym == "RELIANCE" else {"symbol": sym, "name": "", "price": None, "found": False}
     )

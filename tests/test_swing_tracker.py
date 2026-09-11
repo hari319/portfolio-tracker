@@ -6,8 +6,11 @@ from stockmon.db import get_connection
 from stockmon.db.repositories import swing_tracker as repo
 from stockmon.swing_tracker import (
     add_swing_trade,
+    bulk_delete_completed_trades,
     calculate_distance_pct,
+    complete_swing_trade,
     delete_swing_trade,
+    delete_swing_trade_permanently,
     load_swing_trades,
     parse_range_or_number,
     refresh_all_swing_trade_prices,
@@ -135,9 +138,20 @@ def test_swing_trade_crud_lifecycle(clean_swing_tracker):
     assert updated["current_price"] == 990.0
     assert updated["thesis"] == "Updated thesis after earnings release."
 
-    # 4. Delete
+    # 4. Move to completed via delete_swing_trade (active -> completed)
     deleted = delete_swing_trade(trade["id"])
     assert deleted is True
+    completed_trade = repo.get_trade(trade["id"])
+    assert completed_trade is not None
+    assert completed_trade["status"] == "completed"
+
+    loaded = load_swing_trades()
+    assert len(loaded["active_trades"]) == 0
+    assert len(loaded["completed_trades"]) == 1
+
+    # 5. Permanent delete
+    perm_deleted = delete_swing_trade_permanently(trade["id"])
+    assert perm_deleted is True
     assert repo.get_trade(trade["id"]) is None
     assert len(load_swing_trades()["trades"]) == 0
 
@@ -303,9 +317,104 @@ def test_flask_api_endpoints(clean_swing_tracker):
         assert data["price"] == 455.0
         assert data["source"] == "portfolio"
 
-    # 6. DELETE /api/swing-tracker/<id>
+    # 6. DELETE /api/swing-tracker/<id> (moves active trade to completed)
     res = client.delete(f"/api/swing-tracker/{trade_id}")
     assert res.status_code == 200
     assert res.get_json()["ok"] is True
+    assert len(res.get_json()["active_trades"]) == 0
+    assert len(res.get_json()["completed_trades"]) == 1
+
+    # 7. DELETE /api/swing-tracker/<id>?permanent=true (permanent irreversible delete)
+    res = client.delete(f"/api/swing-tracker/{trade_id}?permanent=true")
+    assert res.status_code == 200
+    assert res.get_json()["ok"] is True
     assert len(res.get_json()["trades"]) == 0
+    assert len(res.get_json()["completed_trades"]) == 0
+
+
+def test_multi_select_trade_sources(clean_swing_tracker):
+    """Verify multiple trade sources can be saved as list or comma-separated string,
+    deduped, and properly returned as both string and list."""
+    trade1 = add_swing_trade({
+        "symbol": "INFY",
+        "date": "2026-09-11",
+        "current_price": 1800.0,
+        "trade_sources": ["Alpha Scanner", "Self Analysis", "VIP Discord"],
+    })
+    assert trade1["trade_source"] == "Alpha Scanner, Self Analysis, VIP Discord"
+    assert trade1["trade_sources"] == ["Alpha Scanner", "Self Analysis", "VIP Discord"]
+
+    # All unique sources persisted
+    sources = repo.list_sources()
+    assert "Alpha Scanner" in sources
+    assert "Self Analysis" in sources
+    assert "VIP Discord" in sources
+
+    # Test update with comma-separated string
+    updated = update_swing_trade(trade1["id"], {
+        "trade_source": "Alpha Scanner, Momentum Bot",
+    })
+    assert updated["trade_source"] == "Alpha Scanner, Momentum Bot"
+    assert updated["trade_sources"] == ["Alpha Scanner", "Momentum Bot"]
+
+
+def test_active_to_completed_transfer(clean_swing_tracker):
+    """Verify active trades default to 'active', can be moved to 'completed' via
+    delete_swing_trade or complete_swing_trade, and load_swing_trades categorizes them."""
+    t1 = add_swing_trade({"symbol": "TCS", "current_price": 4200.0})
+    t2 = add_swing_trade({"symbol": "INFY", "current_price": 1850.0})
+
+    initial = load_swing_trades()
+    assert len(initial["active_trades"]) == 2
+    assert len(initial["completed_trades"]) == 0
+
+    # Move t1 to completed via complete_swing_trade
+    completed_t1 = complete_swing_trade(t1["id"])
+    assert completed_t1["status"] == "completed"
+
+    after_first = load_swing_trades()
+    assert len(after_first["active_trades"]) == 1
+    assert len(after_first["completed_trades"]) == 1
+    assert after_first["active_trades"][0]["symbol"] == "INFY.NS"
+    assert after_first["completed_trades"][0]["symbol"] == "TCS.NS"
+
+    # Move t2 to completed via delete_swing_trade
+    assert delete_swing_trade(t2["id"]) is True
+    after_second = load_swing_trades()
+    assert len(after_second["active_trades"]) == 0
+    assert len(after_second["completed_trades"]) == 2
+
+
+def test_completed_permanent_delete_operations(clean_swing_tracker):
+    """Verify single permanent delete, bulk selected delete, and delete all in completed."""
+    t1 = add_swing_trade({"symbol": "TCS", "current_price": 4200.0, "status": "completed"})
+    t2 = add_swing_trade({"symbol": "INFY", "current_price": 1850.0, "status": "completed"})
+    t3 = add_swing_trade({"symbol": "WIPRO", "current_price": 450.0, "status": "completed"})
+    t4 = add_swing_trade({"symbol": "RELIANCE", "current_price": 2900.0, "status": "active"})
+
+    # 1. Single permanent delete
+    assert delete_swing_trade_permanently(t1["id"]) is True
+    assert repo.get_trade(t1["id"]) is None
+    assert len(load_swing_trades()["completed_trades"]) == 2
+
+    # 2. Bulk delete selected [t2, t3]
+    deleted_count = bulk_delete_completed_trades(trade_ids=[t2["id"], t3["id"]])
+    assert deleted_count == 2
+    assert repo.get_trade(t2["id"]) is None
+    assert repo.get_trade(t3["id"]) is None
+    assert len(load_swing_trades()["completed_trades"]) == 0
+    # Active trade t4 still untouched
+    assert len(load_swing_trades()["active_trades"]) == 1
+
+    # 3. Add more completed trades and test delete all completed
+    c1 = add_swing_trade({"symbol": "HDFCBANK", "current_price": 1600.0, "status": "completed"})
+    c2 = add_swing_trade({"symbol": "ICICIBANK", "current_price": 1200.0, "status": "completed"})
+    assert len(load_swing_trades()["completed_trades"]) == 2
+
+    deleted_all_count = bulk_delete_completed_trades(delete_all=True)
+    assert deleted_all_count == 2
+    assert len(load_swing_trades()["completed_trades"]) == 0
+    # Active trade still present
+    assert len(load_swing_trades()["active_trades"]) == 1
+    assert repo.get_trade(t4["id"]) is not None
 
