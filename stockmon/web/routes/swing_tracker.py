@@ -12,9 +12,10 @@ swing_tracker_bp = Blueprint("swing_tracker", __name__)
 
 @swing_tracker_bp.get("/api/swing-tracker")
 def api_get_swing_tracker():
-    """Retrieve all swing trades and available trade sources."""
+    """Retrieve swing trades and available trade sources."""
     from ...swing_tracker import load_swing_trades
-    data = load_swing_trades()
+    status = request.args.get("status", "").strip() or None
+    data = load_swing_trades(status=status)
     return jsonify({"ok": True, **data})
 
 
@@ -66,23 +67,90 @@ def api_update_swing_trade(trade_id: int):
         return jsonify({"ok": False, "error": f"Failed to update swing trade: {exc}"}), 500
 
 
+@swing_tracker_bp.post("/api/swing-tracker/<int:trade_id>/complete")
+def api_complete_swing_trade(trade_id: int):
+    """Move an active trade to completed."""
+    from ...swing_tracker import complete_swing_trade, load_swing_trades
+    try:
+        trade = complete_swing_trade(trade_id)
+        data = load_swing_trades()
+        return jsonify({
+            "ok": True,
+            "trade": trade,
+            **data,
+            "message": f"Swing trade for {trade['symbol']} moved to Completed.",
+        })
+    except ValidationError as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 400
+    except Exception as exc:
+        logger.exception("Failed to complete swing trade %s", trade_id)
+        return jsonify({"ok": False, "error": f"Failed to complete swing trade: {exc}"}), 500
+
+
 @swing_tracker_bp.delete("/api/swing-tracker/<int:trade_id>")
 def api_delete_swing_trade(trade_id: int):
-    """Delete a swing trade."""
-    from ...swing_tracker import delete_swing_trade, load_swing_trades
+    """Delete or archive a swing trade."""
+    from ...swing_tracker import delete_swing_trade, delete_swing_trade_permanently, load_swing_trades
+    permanent = request.args.get("permanent", "").lower() in ("true", "1")
     try:
-        deleted = delete_swing_trade(trade_id)
+        if permanent:
+            deleted = delete_swing_trade_permanently(trade_id)
+            msg = f"Swing trade #{trade_id} permanently deleted."
+        else:
+            deleted = delete_swing_trade(trade_id)
+            msg = f"Swing trade #{trade_id} moved to Completed."
+
         if not deleted:
             return jsonify({"ok": False, "error": f"Swing trade #{trade_id} not found."}), 404
         data = load_swing_trades()
         return jsonify({
             "ok": True,
             **data,
-            "message": f"Swing trade #{trade_id} deleted successfully.",
+            "message": msg,
         })
     except Exception as exc:
         logger.exception("Failed to delete swing trade %s", trade_id)
         return jsonify({"ok": False, "error": f"Failed to delete swing trade: {exc}"}), 500
+
+
+@swing_tracker_bp.delete("/api/swing-tracker/<int:trade_id>/permanent")
+def api_delete_swing_trade_permanent(trade_id: int):
+    """Permanently delete a swing trade."""
+    from ...swing_tracker import delete_swing_trade_permanently, load_swing_trades
+    try:
+        deleted = delete_swing_trade_permanently(trade_id)
+        if not deleted:
+            return jsonify({"ok": False, "error": f"Swing trade #{trade_id} not found."}), 404
+        data = load_swing_trades()
+        return jsonify({
+            "ok": True,
+            **data,
+            "message": f"Swing trade #{trade_id} permanently deleted.",
+        })
+    except Exception as exc:
+        logger.exception("Failed to permanently delete swing trade %s", trade_id)
+        return jsonify({"ok": False, "error": f"Failed to delete swing trade: {exc}"}), 500
+
+
+@swing_tracker_bp.post("/api/swing-tracker/bulk-delete")
+def api_bulk_delete_swing_trades():
+    """Permanently delete multiple selected trades or all completed trades."""
+    from ...swing_tracker import bulk_delete_completed_trades, load_swing_trades
+    payload = request.get_json(silent=True) or {}
+    trade_ids = payload.get("ids", [])
+    delete_all = bool(payload.get("all", False))
+    try:
+        deleted_count = bulk_delete_completed_trades(trade_ids=trade_ids, delete_all=delete_all)
+        data = load_swing_trades()
+        return jsonify({
+            "ok": True,
+            "deleted_count": deleted_count,
+            **data,
+            "message": f"Permanently deleted {deleted_count} completed trade(s).",
+        })
+    except Exception as exc:
+        logger.exception("Failed to bulk delete swing trades")
+        return jsonify({"ok": False, "error": f"Failed to bulk delete: {exc}"}), 500
 
 
 @swing_tracker_bp.post("/api/swing-tracker/<int:trade_id>/refresh-price")

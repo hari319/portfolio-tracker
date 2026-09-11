@@ -80,6 +80,18 @@ def _v5_swing_tracker(conn: sqlite3.Connection) -> None:
         pass
 
 
+def _v6_swing_tracker_status(conn: sqlite3.Connection) -> None:
+    """Add status column to swing_tracker table and create index."""
+    try:
+        conn.execute("ALTER TABLE swing_tracker ADD COLUMN status TEXT NOT NULL DEFAULT 'active'")
+    except Exception:
+        pass
+    try:
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_swing_tracker_status ON swing_tracker(status)")
+    except Exception:
+        pass
+
+
 # Append-only list: (version_number, callable).
 # NEVER edit or renumber a shipped migration.
 MIGRATIONS: list[tuple[int, callable]] = [
@@ -88,6 +100,7 @@ MIGRATIONS: list[tuple[int, callable]] = [
     (3, _v3_invested_amount),
     (4, _v4_stock_name),
     (5, _v5_swing_tracker),
+    (6, _v6_swing_tracker_status),
 ]
 
 

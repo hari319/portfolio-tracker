@@ -16,12 +16,14 @@ Detailed feature guides, formulas, screening criteria, and workflows have been m
 | **Tab 2: Portfolio Tracker** | [**Portfolio Tracker Guide**](docs/PORTFOLIO_TRACKER.md) | Transactional holdings ledger (MADI, BAPA, LOAN), multi-buy aggregation, realized sold records, dividends, loan balance sheet, and full Excel round-trip import/export. |
 | **Tab 3: Status** | [**Stock Status & Scenario Analysis**](docs/TAB2_STOCK_STATUS.md) | Valuation journal, Base/Bull/Bear targets & CAGR %, Best Entry tracking, live price comparisons, and multi-date analysis versioning. |
 | **Tab 4: Screener** | [**Market Screener & Predictive Analysis**](docs/TAB3_MARKET_SCREENER.md) | Broad-market scanning (>3,400 NSE stocks), automated daily `X-WP-Nonce` lifecycle, 154-column table, 1-click strategy presets, custom filter builder, and multi-day trajectory engine. |
-| **Tab 5: Swing Tracker** | [**Swing Tracker Guide**](docs/SWING_TRACKER.md) | Swing trade journal with entry zones, stop losses, multi-target tracking, pattern breakouts, trade sources, range-average percentage calculations, and daily 9:30 AM auto-refresh. |
+| **Tab 5: Swing Tracker** | [**Swing Tracker Guide**](docs/SWING_TRACKER.md), [**Workflows Guide**](docs/SWING_TRACKER_WORKFLOWS.md) | Swing trade journal with entry zones, stop losses, multi-target tracking, pattern breakouts, multi-select trade sources, Active/Completed tabs, bulk deletion, range-average percentage calculations, and daily 9:30 AM auto-refresh. |
 
 Additional references:
 
 | Document | Description |
 | :--- | :--- |
+| [**Backup Retention Policy**](docs/BACKUP_RETENTION_POLICY.md) | 5-day rolling retention rule, manifest synchronization, and tab-wide database backup coverage. |
+| [**Screener Manual Backup**](docs/SCREENER_MANUAL_BACKUP.md) | On-demand snapshots, direct browser download, and restoration guide for the ~820 MB screener database. |
 | [**Sheet Format Spec**](docs/SHEET_FORMAT.md) | Column layout and Excel workbook structure for Portfolio Tracker import/export. |
 | [**Contributing Guide**](CONTRIBUTING.md) | Naming conventions, project structure rules, and guide for adding new features. |
 
@@ -460,6 +462,8 @@ The Flask backend provides clean REST endpoints and real-time SSE streaming.
 | `GET /api/screener/multi-day-analysis` | Computes multi-day sequence metrics and returns ranked setups. |
 | `POST /api/screener/backtest` | Runs a backtest strategy against screener data. |
 | `POST /api/screener/rebuild` | Triggers background historical screener re-fetch. |
+| `POST /api/screener/backup` | Generates a standalone, timestamped on-demand snapshot of `screener_cache.db`. |
+| `GET /api/screener/backup/download/<filename>` | Streams a requested screener database backup file for direct browser download. |
 
 ### Backup & Restore
 
@@ -497,12 +501,15 @@ The Flask backend provides clean REST endpoints and real-time SSE streaming.
 
 | Method & Path | Description |
 | :--- | :--- |
-| `GET /api/swing-tracker` | Returns all swing trade setups. |
-| `POST /api/swing-tracker` | Creates a new swing trade entry. |
-| `PUT /api/swing-tracker/<id>` | Updates a swing trade entry. |
-| `DELETE /api/swing-tracker/<id>` | Deletes a swing trade entry. |
+| `GET /api/swing-tracker` | Returns all swing trade setups, partitioned into active and completed. |
+| `POST /api/swing-tracker` | Creates a new active swing trade entry (supports multi-source list). |
+| `PUT /api/swing-tracker/<id>` | Updates an existing swing trade entry. |
+| `DELETE /api/swing-tracker/<id>` | Soft-deletes a trade by moving it from Active to Completed. |
+| `POST /api/swing-tracker/<id>/complete` | Explicitly archives an active trade to Completed status. |
+| `DELETE /api/swing-tracker/<id>/permanent` | Permanently deletes a single completed trade from SQLite. |
+| `POST /api/swing-tracker/bulk-delete` | Bulk permanently deletes completed trades by ID list or all. |
 | `POST /api/swing-tracker/<id>/refresh-price` | Refreshes current price for a single swing trade. |
-| `POST /api/swing-tracker/refresh-all` | Bulk refreshes prices for all swing trades. |
+| `POST /api/swing-tracker/refresh-all` | Refreshes prices for all active swing trades. |
 | `GET /api/swing-tracker/sources` | Lists all persisted trade sources. |
 | `POST /api/swing-tracker/sources` | Creates a new trade source option. |
 | `GET /api/swing-tracker/lookup-ticker` | Validates a ticker and resolves price (portfolio table first, then live). |
@@ -513,33 +520,30 @@ The Flask backend provides clean REST endpoints and real-time SSE streaming.
 
 ### Safe Online Backups
 * Backups run **automatically** at the end of every scheduled market run, and can also be triggered on demand via `POST /api/backup/create`.
-* **7-Day Retention**: The system automatically retains **1 week (7 backups)** of daily snapshots; older backups are automatically pruned to prevent clutter.
-* Backups only snapshot irreplaceable user data from `data/stockmon.db` (compressed to ~10–15 KB). Market screener data in `data/screener_cache.db` is disposable and rebuilt on demand from the upstream API.
+* **5-Day Rolling Retention & Max 5 Backups**: Backups older than **5 calendar days** and any backups beyond the **5 most recent** are automatically pruned during rotation, strictly capping disk usage and synchronizing `manifest.json`.
+* **All-Tab Coverage**: Automated backups protect all four durable tabs simultaneously (`Tracker`, `Portfolio Tracker`, `Status`, and `Swing Tracker` inside `stockmon.db`).
+* **Screener On-Demand Snapshots**: The ~820 MB market screener database (`data/screener_cache.db`) features dedicated manual backup and download buttons in the Screener tab (see [SCREENER_MANUAL_BACKUP.md](docs/SCREENER_MANUAL_BACKUP.md)).
 
 ### What is Inside `backups/` and What Each File Does
 When copying to Google Drive or an external disk, copy the `backups/` directory:
 
 | File Pattern | Description & Purpose |
 | :--- | :--- |
-| `stockmon-YYYY-MM-DD_HHMMSS.db.gz` | **Main Database Snapshot**: Contains your portfolios, stock status valuation records, and tracker snapshots. This is the primary file needed to restore your state. |
-| `settings-YYYY-MM-DD_HHMMSS.json` | **Configuration Snapshot**: Backup of your `config/settings.json` (EMA periods, schedule times, retry options). |
-| `manifest.json` | **Audit Ledger**: Contains SHA-256 integrity checksums, timestamps, row counts, and schema versions for every generated backup. |
+| `stockmon-YYYY-MM-DD_HHMMSS.db.gz` | **Main Database Snapshot**: Contains your portfolios, holdings, lots, stock status valuation records, and swing trades. This is the primary file needed to restore your state (strictly capped at 5 files). |
+| `manifest.json` | **Audit Ledger**: Contains SHA-256 integrity checksums, timestamps, row counts, and schema versions for every retained backup. |
 
 ### How to Copy to Google Drive Manually
 1. Open your project root folder and locate the `backups/` directory.
-2. Drag and drop the `backups/` folder (or just the latest `stockmon-*.db.gz` and `settings-*.json`) directly into your Google Drive or external storage.
+2. Drag and drop the `backups/` folder (or just the latest `stockmon-*.db.gz`) directly into your Google Drive or external storage.
 3. *Note*: Never put the live `data/` folder itself inside a cloud-synced folder (sync conflicts can corrupt live SQLite databases in WAL mode). Always sync the static files in `backups/` instead.
 
 ### Manual CLI Disaster Recovery (Without Starting the App)
 If the application is stopped or you are moving to a new PC and need to restore:
 ```powershell
 # 1. Decompress your chosen backup file directly to data/stockmon.db
-python -c "import gzip, shutil; shutil.copyfileobj(gzip.open('backups/stockmon-2026-09-06_192451.db.gz', 'rb'), open('data/stockmon.db', 'wb'))"
+python -c "import gzip, shutil; shutil.copyfileobj(gzip.open('backups/stockmon-2026-09-11_110718.db.gz', 'rb'), open('data/stockmon.db', 'wb'))"
 
-# 2. Copy the paired settings file into config/settings.json (optional)
-Copy-Item "backups/settings-2026-09-06_192451.json" "config/settings.json"
-
-# 3. Start the application (screener cache will re-sync from API if needed)
+# 2. Start the application (screener cache will re-sync from API if needed)
 python app.py
 ```
 

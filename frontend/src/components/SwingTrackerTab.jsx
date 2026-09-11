@@ -143,7 +143,9 @@ export default function SwingTrackerTab({ showToast, isBusy, setIsBusy }) {
   const [trades, setTrades] = useState([]);
   const [sources, setSources] = useState([]);
   const [isLoading, setIsLoading] = useState(true);
+  const [subTab, setSubTab] = useState('active'); // 'active' | 'completed'
   const [searchQuery, setSearchQuery] = useState('');
+  const [selectedCompletedIds, setSelectedCompletedIds] = useState(new Set());
   const [refreshingRowId, setRefreshingRowId] = useState(null);
   const [isRefreshingAll, setIsRefreshingAll] = useState(false);
 
@@ -188,13 +190,24 @@ export default function SwingTrackerTab({ showToast, isBusy, setIsBusy }) {
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, []);
 
-  // Filter trades live as-you-type
-  const filteredTrades = useMemo(() => {
-    if (!trades) return [];
-    const q = searchQuery.trim().toLowerCase();
-    if (!q) return trades;
+  // Separate active vs completed trades
+  const activeTrades = useMemo(() => {
+    return (trades || []).filter((t) => t.status !== 'completed');
+  }, [trades]);
 
-    return trades.filter((t) => {
+  const completedTrades = useMemo(() => {
+    return (trades || []).filter((t) => t.status === 'completed');
+  }, [trades]);
+
+  const currentTabTrades = subTab === 'active' ? activeTrades : completedTrades;
+
+  // Filter trades live as-you-type based on active subTab
+  const filteredTrades = useMemo(() => {
+    if (!currentTabTrades) return [];
+    const q = searchQuery.trim().toLowerCase();
+    if (!q) return currentTabTrades;
+
+    return currentTabTrades.filter((t) => {
       const sym = (t.symbol || '').toLowerCase();
       const pattern = (t.pattern_break || '').toLowerCase();
       const thesisText = (t.thesis || '').toLowerCase();
@@ -208,7 +221,28 @@ export default function SwingTrackerTab({ showToast, isBusy, setIsBusy }) {
         dateStr.includes(q)
       );
     });
-  }, [trades, searchQuery]);
+  }, [currentTabTrades, searchQuery]);
+
+  // Bulk selection helpers for Completed tab
+  const allFilteredSelected =
+    filteredTrades.length > 0 && filteredTrades.every((t) => selectedCompletedIds.has(t.id));
+
+  const handleToggleSelectAll = () => {
+    if (allFilteredSelected) {
+      setSelectedCompletedIds(new Set());
+    } else {
+      setSelectedCompletedIds(new Set(filteredTrades.map((t) => t.id)));
+    }
+  };
+
+  const handleToggleSelectRow = (id) => {
+    setSelectedCompletedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
 
   // Open Add modal
   const handleOpenAdd = () => {
@@ -247,22 +281,104 @@ export default function SwingTrackerTab({ showToast, isBusy, setIsBusy }) {
     }
   };
 
-  // Delete trade
-  const handleDeleteTrade = async (item) => {
-    const confirmed = window.confirm(`Delete swing trade for ${item.symbol}?`);
+  // Move active trade to Completed (rather than deleting outright)
+  const handleMoveToCompleted = async (item) => {
+    const confirmed = window.confirm(`Move swing trade for ${item.symbol} to Completed?`);
     if (!confirmed) return;
 
     if (setIsBusy) setIsBusy(true);
     try {
-      const res = await api.deleteSwingTrade(item.id);
+      const res = await api.completeSwingTrade(item.id);
       if (res && res.ok) {
         if (res.trades) setTrades(res.trades);
-        if (showToast) showToast(res.message || `${item.symbol} deleted.`, false);
+        if (showToast) showToast(`Moved ${item.symbol} to Completed trades.`, false);
       } else {
         await loadData();
       }
     } catch (err) {
-      if (showToast) showToast(err.message || 'Failed to delete trade.', true);
+      if (showToast) showToast(err.message || 'Failed to move trade to completed.', true);
+    } finally {
+      if (setIsBusy) setIsBusy(false);
+    }
+  };
+
+  // Permanently delete a single completed trade (true irreversible delete)
+  const handlePermanentDeleteSingle = async (item) => {
+    const confirmed = window.confirm(
+      `PERMANENTLY DELETE swing trade for ${item.symbol}?\n\nThis action is irreversible and cannot be undone.`
+    );
+    if (!confirmed) return;
+
+    if (setIsBusy) setIsBusy(true);
+    try {
+      const res = await api.deleteSwingTradePermanent(item.id);
+      if (res && res.ok) {
+        if (res.trades) setTrades(res.trades);
+        setSelectedCompletedIds((prev) => {
+          const next = new Set(prev);
+          next.delete(item.id);
+          return next;
+        });
+        if (showToast) showToast(`Permanently deleted ${item.symbol}.`, false);
+      } else {
+        await loadData();
+      }
+    } catch (err) {
+      if (showToast) showToast(err.message || 'Failed to delete trade permanently.', true);
+    } finally {
+      if (setIsBusy) setIsBusy(false);
+    }
+  };
+
+  // Permanently delete multiple selected completed trades
+  const handlePermanentDeleteSelected = async () => {
+    const count = selectedCompletedIds.size;
+    if (count === 0) return;
+
+    const confirmed = window.confirm(
+      `PERMANENTLY DELETE ${count} selected trade(s)?\n\nThis action is irreversible and cannot be undone.`
+    );
+    if (!confirmed) return;
+
+    if (setIsBusy) setIsBusy(true);
+    try {
+      const ids = Array.from(selectedCompletedIds);
+      const res = await api.bulkDeleteCompletedTrades({ ids });
+      if (res && res.ok) {
+        if (res.trades) setTrades(res.trades);
+        setSelectedCompletedIds(new Set());
+        if (showToast) showToast(`Permanently deleted ${res.deleted_count || count} trade(s).`, false);
+      } else {
+        await loadData();
+      }
+    } catch (err) {
+      if (showToast) showToast(err.message || 'Failed to delete selected trades.', true);
+    } finally {
+      if (setIsBusy) setIsBusy(false);
+    }
+  };
+
+  // Permanently delete all completed trades
+  const handlePermanentDeleteAll = async () => {
+    if (completedTrades.length === 0) return;
+
+    const confirmed = window.confirm(
+      `⚠️ WARNING: PERMANENTLY DELETE ALL ${completedTrades.length} COMPLETED TRADES?\n\nThis will irreversibly remove all completed trade records. Are you sure?`
+    );
+    if (!confirmed) return;
+
+    if (setIsBusy) setIsBusy(true);
+    try {
+      const res = await api.bulkDeleteCompletedTrades({ all: true });
+      if (res && res.ok) {
+        if (res.trades) setTrades(res.trades);
+        setSelectedCompletedIds(new Set());
+        if (showToast) showToast('All completed trades permanently deleted.', false);
+      } else {
+        await loadData();
+      }
+    } catch (err) {
+      if (showToast) showToast(err.message || 'Failed to delete all completed trades.', true);
     } finally {
       if (setIsBusy) setIsBusy(false);
     }
@@ -302,64 +418,130 @@ export default function SwingTrackerTab({ showToast, isBusy, setIsBusy }) {
 
   return (
     <div className="swing-tracker-container">
-      {/* Top Bar: Search, Stats, and Actions */}
+      {/* Sub-tabs and Top Action Bar */}
       <div className="d-flex flex-wrap justify-content-between align-items-center gap-3 mb-3">
-        {/* Live Search Input (no separate search button) */}
-        <div className="input-group input-group-sm" style={{ maxWidth: '340px' }}>
-          <span className="input-group-text bg-white border-end-0 text-muted">
-            <Search size={14} />
-          </span>
-          <input
-            ref={searchInputRef}
-            type="text"
-            className="form-control border-start-0 ps-0"
-            placeholder="Search symbol, pattern, thesis, source... (Ctrl+F)"
-            value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
-          />
-          {searchQuery && (
+        {/* Left: Sub-tab switcher + Live Search */}
+        <div className="d-flex flex-wrap align-items-center gap-3">
+          {/* Sub-tab pills */}
+          <div className="tab-navigation-bar">
             <button
               type="button"
-              className="btn btn-outline-secondary border-start-0"
+              className={`tab-nav-item ${subTab === 'active' ? 'active' : ''}`}
               onClick={() => {
-                setSearchQuery('');
-                searchInputRef.current?.focus();
+                setSubTab('active');
+                setSelectedCompletedIds(new Set());
               }}
-              title="Clear search"
             >
-              <X size={13} />
+              <TrendingUp size={15} />
+              <span>Active Trades</span>
+              <span
+                className={`badge ${subTab === 'active' ? 'bg-primary-subtle text-primary' : 'bg-light text-muted'} ms-1`}
+                style={{ fontSize: '0.72rem' }}
+              >
+                {activeTrades.length}
+              </span>
             </button>
-          )}
+            <button
+              type="button"
+              className={`tab-nav-item ${subTab === 'completed' ? 'active' : ''}`}
+              onClick={() => setSubTab('completed')}
+            >
+              <CheckCircle2 size={15} />
+              <span>Completed</span>
+              <span
+                className={`badge ${subTab === 'completed' ? 'bg-secondary-subtle text-secondary' : 'bg-light text-muted'} ms-1`}
+                style={{ fontSize: '0.72rem' }}
+              >
+                {completedTrades.length}
+              </span>
+            </button>
+          </div>
+
+          {/* Live Search Input */}
+          <div className="input-group input-group-sm" style={{ minWidth: '260px', maxWidth: '340px' }}>
+            <span className="input-group-text bg-white border-end-0 text-muted">
+              <Search size={14} />
+            </span>
+            <input
+              ref={searchInputRef}
+              type="text"
+              className="form-control border-start-0 ps-0"
+              placeholder={`Search ${subTab} trades... (Ctrl+F)`}
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+            />
+            {searchQuery && (
+              <button
+                type="button"
+                className="btn btn-outline-secondary border-start-0"
+                onClick={() => {
+                  setSearchQuery('');
+                  searchInputRef.current?.focus();
+                }}
+                title="Clear search"
+              >
+                <X size={13} />
+              </button>
+            )}
+          </div>
         </div>
 
-        {/* Action Buttons */}
+        {/* Right: Actions depending on subTab */}
         <div className="d-flex align-items-center gap-2">
-          <button
-            type="button"
-            className="btn btn-outline-secondary btn-sm d-inline-flex align-items-center gap-1"
-            onClick={handleRefreshAll}
-            disabled={isRefreshingAll || trades.length === 0}
-            title="Refresh prices for all swing trades"
-          >
-            <RefreshCw size={14} className={isRefreshingAll ? 'spin-anim' : ''} />
-            <span>{isRefreshingAll ? 'Refreshing...' : 'Refresh Prices'}</span>
-          </button>
+          {subTab === 'active' ? (
+            <>
+              <button
+                type="button"
+                className="btn btn-outline-secondary btn-sm d-inline-flex align-items-center gap-1"
+                onClick={handleRefreshAll}
+                disabled={isRefreshingAll || activeTrades.length === 0}
+                title="Refresh prices for all active swing trades"
+              >
+                <RefreshCw size={14} className={isRefreshingAll ? 'spin-anim' : ''} />
+                <span>{isRefreshingAll ? 'Refreshing...' : 'Refresh Prices'}</span>
+              </button>
 
-          <button
-            type="button"
-            className="btn btn-primary btn-sm d-inline-flex align-items-center gap-1 shadow-sm px-3"
-            onClick={handleOpenAdd}
-          >
-            <Plus size={15} />
-            <span>Add Swing Trade</span>
-          </button>
+              <button
+                type="button"
+                className="btn btn-primary btn-sm d-inline-flex align-items-center gap-1 shadow-sm px-3"
+                onClick={handleOpenAdd}
+              >
+                <Plus size={15} />
+                <span>Add Swing Trade</span>
+              </button>
+            </>
+          ) : (
+            <>
+              <button
+                type="button"
+                className="btn btn-outline-danger btn-sm d-inline-flex align-items-center gap-1"
+                onClick={handlePermanentDeleteSelected}
+                disabled={selectedCompletedIds.size === 0}
+                title="Permanently delete selected completed trades"
+              >
+                <Trash2 size={14} />
+                <span>Delete Selected {selectedCompletedIds.size > 0 ? `(${selectedCompletedIds.size})` : ''}</span>
+              </button>
+
+              <button
+                type="button"
+                className="btn btn-danger btn-sm d-inline-flex align-items-center gap-1 shadow-sm"
+                onClick={handlePermanentDeleteAll}
+                disabled={completedTrades.length === 0}
+                title="Permanently delete all completed trades"
+              >
+                <Trash2 size={14} />
+                <span>Delete All</span>
+              </button>
+            </>
+          )}
         </div>
       </div>
 
       {/* Search Filter Indicator */}
       {searchQuery && (
         <div className="text-muted small mb-2">
-          Filtering {filteredTrades.length} of {trades.length} trades matching &ldquo;
+          Filtering {filteredTrades.length} of {currentTabTrades.length} {subTab} trades matching &ldquo;
           <span className="fw-semibold text-dark">{searchQuery}</span>&rdquo;
         </div>
       )}
@@ -370,6 +552,18 @@ export default function SwingTrackerTab({ showToast, isBusy, setIsBusy }) {
           <table className="table-stock m-0">
             <thead>
               <tr>
+                {subTab === 'completed' && (
+                  <th style={{ width: '40px', textAlign: 'center' }}>
+                    <input
+                      type="checkbox"
+                      className="form-check-input"
+                      checked={allFilteredSelected}
+                      onChange={handleToggleSelectAll}
+                      disabled={filteredTrades.length === 0}
+                      title={allFilteredSelected ? 'Deselect all' : 'Select all'}
+                    />
+                  </th>
+                )}
                 <th className="col-sticky-ticker" style={{ minWidth: '150px' }}>
                   Ticker
                 </th>
@@ -388,7 +582,7 @@ export default function SwingTrackerTab({ showToast, isBusy, setIsBusy }) {
             <tbody>
               {filteredTrades.length === 0 ? (
                 <tr>
-                  <td colSpan="11" className="p-5 text-center text-muted">
+                  <td colSpan={subTab === 'completed' ? 12 : 11} className="p-5 text-center text-muted">
                     {isLoading ? (
                       <div className="d-flex align-items-center justify-content-center gap-2">
                         <span className="spinner-border spinner-border-sm text-primary" role="status" />
@@ -396,11 +590,13 @@ export default function SwingTrackerTab({ showToast, isBusy, setIsBusy }) {
                       </div>
                     ) : searchQuery ? (
                       <div>
-                        No swing trades matching &ldquo;<strong>{searchQuery}</strong>&rdquo;.
+                        No {subTab} swing trades matching &ldquo;<strong>{searchQuery}</strong>&rdquo;.
                       </div>
+                    ) : subTab === 'completed' ? (
+                      <div>No completed swing trades yet.</div>
                     ) : (
                       <div>
-                        No swing trades recorded yet. Click{' '}
+                        No active swing trades recorded yet. Click{' '}
                         <button
                           type="button"
                           className="btn btn-link p-0 align-baseline fw-semibold"
@@ -420,7 +616,22 @@ export default function SwingTrackerTab({ showToast, isBusy, setIsBusy }) {
                   const cp = item.current_price;
 
                   return (
-                    <tr key={item.id}>
+                    <tr
+                      key={item.id}
+                      className={subTab === 'completed' && selectedCompletedIds.has(item.id) ? 'table-active' : ''}
+                    >
+                      {/* Checkbox for Completed tab */}
+                      {subTab === 'completed' && (
+                        <td style={{ textAlign: 'center' }}>
+                          <input
+                            type="checkbox"
+                            className="form-check-input"
+                            checked={selectedCompletedIds.has(item.id)}
+                            onChange={() => handleToggleSelectRow(item.id)}
+                          />
+                        </td>
+                      )}
+
                       {/* 1. Ticker */}
                       <td className="col-sticky-ticker">
                         <div className="col-ticker-wrap">
@@ -453,18 +664,20 @@ export default function SwingTrackerTab({ showToast, isBusy, setIsBusy }) {
                                 })}`
                               : '—'}
                           </span>
-                          <button
-                            type="button"
-                            className="btn btn-link p-0 text-muted opacity-75 hover-opacity-100"
-                            onClick={() => handleRefreshRowPrice(item)}
-                            disabled={isRowRefreshing}
-                            title={`Refresh price for ${item.symbol}${item.current_price_updated_at ? ` (Last updated: ${item.current_price_updated_at})` : ''}`}
-                          >
-                            <RefreshCw
-                              size={12}
-                              className={isRowRefreshing ? 'spin-anim text-primary' : ''}
-                            />
-                          </button>
+                          {subTab === 'active' && (
+                            <button
+                              type="button"
+                              className="btn btn-link p-0 text-muted opacity-75 hover-opacity-100"
+                              onClick={() => handleRefreshRowPrice(item)}
+                              disabled={isRowRefreshing}
+                              title={`Refresh price for ${item.symbol}${item.current_price_updated_at ? ` (Last updated: ${item.current_price_updated_at})` : ''}`}
+                            >
+                              <RefreshCw
+                                size={12}
+                                className={isRowRefreshing ? 'spin-anim text-primary' : ''}
+                              />
+                            </button>
+                          )}
                         </div>
                       </td>
 
@@ -514,36 +727,75 @@ export default function SwingTrackerTab({ showToast, isBusy, setIsBusy }) {
                         <ThesisCell text={item.thesis} />
                       </td>
 
-                      {/* 10. Trade Source */}
+                      {/* 10. Trade Source (Multi-badge support) */}
                       <td>
-                        {item.trade_source ? (
-                          <span className="badge bg-light text-dark border text-truncate" style={{ maxWidth: '140px' }} title={item.trade_source}>
-                            {item.trade_source}
-                          </span>
+                        {item.trade_sources && item.trade_sources.length > 0 ? (
+                          <div className="d-flex flex-wrap gap-1">
+                            {item.trade_sources.map((src, sIdx) => (
+                              <span
+                                key={sIdx}
+                                className="badge bg-light text-dark border text-truncate"
+                                style={{ maxWidth: '140px' }}
+                                title={src}
+                              >
+                                {src}
+                              </span>
+                            ))}
+                          </div>
+                        ) : item.trade_source ? (
+                          <div className="d-flex flex-wrap gap-1">
+                            {item.trade_source
+                              .split(',')
+                              .map((s) => s.trim())
+                              .filter(Boolean)
+                              .map((src, sIdx) => (
+                                <span
+                                  key={sIdx}
+                                  className="badge bg-light text-dark border text-truncate"
+                                  style={{ maxWidth: '140px' }}
+                                  title={src}
+                                >
+                                  {src}
+                                </span>
+                              ))}
+                          </div>
                         ) : (
                           <span className="text-muted">—</span>
                         )}
                       </td>
 
-                      {/* 11. Actions (Edit & Delete) */}
+                      {/* 11. Actions */}
                       <td style={{ textAlign: 'center' }}>
                         <div className="d-flex align-items-center justify-content-center gap-1">
-                          <button
-                            type="button"
-                            className="btn btn-sm btn-link p-1 text-secondary"
-                            onClick={() => handleOpenEdit(item)}
-                            title={`Edit ${item.symbol}`}
-                          >
-                            <Edit2 size={14} />
-                          </button>
-                          <button
-                            type="button"
-                            className="btn btn-sm btn-link p-1 text-danger"
-                            onClick={() => handleDeleteTrade(item)}
-                            title={`Delete ${item.symbol}`}
-                          >
-                            <Trash2 size={14} />
-                          </button>
+                          {subTab === 'active' ? (
+                            <>
+                              <button
+                                type="button"
+                                className="btn btn-sm btn-link p-1 text-secondary"
+                                onClick={() => handleOpenEdit(item)}
+                                title={`Edit ${item.symbol}`}
+                              >
+                                <Edit2 size={14} />
+                              </button>
+                              <button
+                                type="button"
+                                className="btn btn-sm btn-link p-1 text-secondary hover-danger"
+                                onClick={() => handleMoveToCompleted(item)}
+                                title={`Move ${item.symbol} to Completed`}
+                              >
+                                <Trash2 size={14} />
+                              </button>
+                            </>
+                          ) : (
+                            <button
+                              type="button"
+                              className="btn btn-sm btn-link p-1 text-danger"
+                              onClick={() => handlePermanentDeleteSingle(item)}
+                              title={`Permanently delete ${item.symbol}`}
+                            >
+                              <Trash2 size={14} />
+                            </button>
+                          )}
                         </div>
                       </td>
                     </tr>

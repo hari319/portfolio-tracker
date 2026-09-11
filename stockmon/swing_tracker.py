@@ -165,9 +165,9 @@ def resolve_ticker_price(symbol: str) -> tuple[float | None, str]:
     return (None, "failed")
 
 
-def load_swing_trades() -> dict[str, Any]:
+def load_swing_trades(status: str | None = None) -> dict[str, Any]:
     """Return all swing trades enriched with calculated distance percentages and all sources."""
-    trades = _repo.list_trades()
+    trades = _repo.list_trades(status=status)
     sources = _repo.list_sources()
 
     enriched_trades = []
@@ -187,8 +187,13 @@ def load_swing_trades() -> dict[str, Any]:
 
         enriched_trades.append(item)
 
+    active_trades = [t for t in enriched_trades if t.get("status") != "completed"]
+    completed_trades = [t for t in enriched_trades if t.get("status") == "completed"]
+
     return {
         "trades": enriched_trades,
+        "active_trades": active_trades,
+        "completed_trades": completed_trades,
         "sources": sources,
     }
 
@@ -225,6 +230,8 @@ def add_swing_trade(payload: dict[str, Any]) -> dict[str, Any]:
         "pattern_break": payload.get("pattern_break"),
         "thesis": payload.get("thesis"),
         "trade_source": payload.get("trade_source"),
+        "trade_sources": payload.get("trade_sources"),
+        "status": payload.get("status", "active"),
     }
 
     return _repo.add_trade(trade_data)
@@ -258,8 +265,14 @@ def update_swing_trade(trade_id: int, payload: dict[str, Any]) -> dict[str, Any]
         "target2": payload.get("target2", existing["target2"]),
         "pattern_break": payload.get("pattern_break", existing["pattern_break"]),
         "thesis": payload.get("thesis", existing["thesis"]),
-        "trade_source": payload.get("trade_source", existing["trade_source"]),
+        "status": payload.get("status", existing.get("status", "active")),
     }
+
+    if "trade_sources" in payload:
+        update_data["trade_sources"] = payload["trade_sources"]
+    elif "trade_source" in payload:
+        update_data["trade_source"] = payload["trade_source"]
+        update_data["trade_sources"] = None
 
     updated = _repo.update_trade(trade_id, update_data)
     if not updated:
@@ -267,9 +280,40 @@ def update_swing_trade(trade_id: int, payload: dict[str, Any]) -> dict[str, Any]
     return updated
 
 
+def complete_swing_trade(trade_id: int) -> dict[str, Any]:
+    """Move an active trade to completed."""
+    existing = _repo.get_trade(trade_id)
+    if not existing:
+        raise ValidationError(f"Swing trade #{trade_id} not found.")
+    updated = _repo.update_trade_status(trade_id, "completed")
+    if not updated:
+        raise ValidationError(f"Could not complete swing trade #{trade_id}.")
+    return updated
+
+
 def delete_swing_trade(trade_id: int) -> bool:
-    """Delete a swing trade by id."""
+    """Move active trade to completed if active, or delete if already completed."""
+    existing = _repo.get_trade(trade_id)
+    if not existing:
+        return False
+    if existing.get("status") == "active":
+        _repo.update_trade_status(trade_id, "completed")
+        return True
     return _repo.delete_trade(trade_id)
+
+
+def delete_swing_trade_permanently(trade_id: int) -> bool:
+    """Permanently delete a swing trade from database."""
+    return _repo.delete_trade(trade_id)
+
+
+def bulk_delete_completed_trades(trade_ids: list[int] | None = None, delete_all: bool = False) -> int:
+    """Permanently delete multiple or all completed swing trades."""
+    if delete_all:
+        return _repo.delete_all_completed()
+    if trade_ids:
+        return _repo.bulk_delete_trades(trade_ids)
+    return 0
 
 
 def refresh_swing_trade_price(trade_id: int) -> dict[str, Any]:
@@ -290,13 +334,13 @@ def refresh_swing_trade_price(trade_id: int) -> dict[str, Any]:
     return trade
 
 
-def refresh_all_swing_trade_prices() -> dict[str, Any]:
-    """Auto-refresh current prices for all swing trades.
+def refresh_all_swing_trade_prices(active_only: bool = True) -> dict[str, Any]:
+    """Auto-refresh current prices for swing trades (active trades by default).
 
     Called during scheduled runs at 9:30 AM (and manual triggers).
     Reuses portfolio table prices first, otherwise fetches.
     """
-    trades = _repo.list_trades()
+    trades = _repo.list_trades(status="active" if active_only else None)
     if not trades:
         return {"total": 0, "updated": 0, "failed": 0}
 

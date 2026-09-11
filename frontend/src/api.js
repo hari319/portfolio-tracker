@@ -299,6 +299,18 @@ export async function deleteSwingTrade(id) {
   return request(`/api/swing-tracker/${encodeURIComponent(id)}`, { method: 'DELETE' });
 }
 
+export async function completeSwingTrade(id) {
+  return sendJson(`/api/swing-tracker/${encodeURIComponent(id)}/complete`, 'POST', {});
+}
+
+export async function deleteSwingTradePermanent(id) {
+  return request(`/api/swing-tracker/${encodeURIComponent(id)}/permanent`, { method: 'DELETE' });
+}
+
+export async function bulkDeleteCompletedTrades({ ids = [], all = false }) {
+  return sendJson('/api/swing-tracker/bulk-delete', 'POST', { ids, all });
+}
+
 export async function refreshSwingTradePrice(id) {
   return sendJson(`/api/swing-tracker/${encodeURIComponent(id)}/refresh-price`, 'POST', {});
 }
@@ -319,4 +331,14 @@ export async function lookupSwingTicker(symbol) {
   return request(`/api/swing-tracker/lookup-ticker?symbol=${encodeURIComponent(symbol)}`);
 }
 
+// ---------------------------------------------------------------------------
+// Screener Backup API
+// ---------------------------------------------------------------------------
 
+export async function backupScreener() {
+  return sendJson('/api/screener/backup', 'POST', {});
+}
+
+export function getScreenerBackupDownloadUrl(filename) {
+  return `/api/screener/backup/download/${encodeURIComponent(filename)}`;
+}

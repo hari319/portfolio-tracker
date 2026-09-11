@@ -150,3 +150,33 @@ def api_screener_rebuild():
     except Exception as exc:
         logger.exception("Screener rebuild failed")
         return jsonify({"ok": False, "error": str(exc)}), 500
+
+
+@screener_bp.post("/api/screener/backup")
+def api_screener_backup():
+    """Trigger a manual backup of the screener database."""
+    from ...db.backup import create_screener_backup
+    try:
+        backup_info = create_screener_backup()
+        return jsonify({
+            "ok": True,
+            "backup": backup_info,
+            "message": f"Screener backup created successfully: {backup_info['filename']} ({backup_info['size_mb']} MB)",
+        })
+    except Exception as exc:
+        logger.exception("Screener backup failed")
+        return jsonify({"ok": False, "error": str(exc)}), 500
+
+
+@screener_bp.get("/api/screener/backup/download/<filename>")
+def api_screener_backup_download(filename: str):
+    """Download a screener backup archive file."""
+    from pathlib import Path
+    from flask import send_from_directory
+    from ... import paths
+    screener_backup_dir = paths.BACKUP_DIR / "screener"
+    safe_name = Path(filename).name
+    target_file = screener_backup_dir / safe_name
+    if not target_file.exists():
+        return jsonify({"ok": False, "error": "Backup file not found."}), 404
+    return send_from_directory(str(screener_backup_dir), safe_name, as_attachment=True)

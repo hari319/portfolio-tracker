@@ -22,7 +22,7 @@ export default function SwingTradeModal({
   const [target2, setTarget2] = useState('');
   const [patternBreak, setPatternBreak] = useState('');
   const [thesis, setThesis] = useState('');
-  const [tradeSource, setTradeSource] = useState('');
+  const [selectedSources, setSelectedSources] = useState([]);
 
   // Ticker lookup state
   const [isLookingUp, setIsLookingUp] = useState(false);
@@ -49,7 +49,7 @@ export default function SwingTradeModal({
       setTarget2('');
       setPatternBreak('');
       setThesis('');
-      setTradeSource('');
+      setSelectedSources([]);
       setLookupResult(null);
       setIsAddingNewSource(false);
       setNewSourceName('');
@@ -71,7 +71,10 @@ export default function SwingTradeModal({
       setTarget2(editItem.target2 || '');
       setPatternBreak(editItem.pattern_break || '');
       setThesis(editItem.thesis || '');
-      setTradeSource(editItem.trade_source || '');
+      const rawSources = editItem.trade_sources && Array.isArray(editItem.trade_sources)
+        ? editItem.trade_sources
+        : (editItem.trade_source ? editItem.trade_source.split(',').map((s) => s.trim()).filter(Boolean) : []);
+      setSelectedSources(rawSources);
       setLookupResult(null);
       setIsAddingNewSource(false);
       setFormError('');
@@ -85,7 +88,7 @@ export default function SwingTradeModal({
       setTarget2('');
       setPatternBreak('');
       setThesis('');
-      setTradeSource(sources.length > 0 ? sources[0] : '');
+      setSelectedSources([]);
       setLookupResult(null);
       setIsAddingNewSource(false);
       setFormError('');
@@ -136,6 +139,16 @@ export default function SwingTradeModal({
     }
   };
 
+  const handleToggleSource = (src) => {
+    setSelectedSources((prev) =>
+      prev.includes(src) ? prev.filter((s) => s !== src) : [...prev, src]
+    );
+  };
+
+  const handleRemoveSource = (src) => {
+    setSelectedSources((prev) => prev.filter((s) => s !== src));
+  };
+
   // Create new source on the fly and persist it
   const handleCreateSource = async (e) => {
     if (e) e.preventDefault();
@@ -149,7 +162,7 @@ export default function SwingTradeModal({
         if (onSourceAdded) {
           onSourceAdded(res.sources || []);
         }
-        setTradeSource(clean);
+        setSelectedSources((prev) => (prev.includes(clean) ? prev : [...prev, clean]));
         setIsAddingNewSource(false);
         setNewSourceName('');
         if (showToast) showToast(`Trade source "${clean}" saved!`, false);
@@ -183,7 +196,8 @@ export default function SwingTradeModal({
         target2: target2.trim(),
         pattern_break: patternBreak.trim(),
         thesis: thesis, // preserve whitespace & newlines
-        trade_source: tradeSource.trim(),
+        trade_sources: selectedSources,
+        trade_source: selectedSources.join(', '),
       };
 
       await onSubmit(payload, isEditMode ? editItem?.id : null);
@@ -329,41 +343,84 @@ export default function SwingTradeModal({
                 </div>
 
                 <div className="col-12 col-md-6">
-                  <label className="form-label small fw-semibold text-dark mb-1">
-                    Trade Source
-                  </label>
+                  <div className="d-flex justify-content-between align-items-center mb-1">
+                    <label className="form-label small fw-semibold text-dark mb-0">
+                      Trade Sources (Multi-select)
+                    </label>
+                    {selectedSources.length > 0 && (
+                      <span className="badge bg-primary-subtle text-primary border border-primary-subtle">
+                        {selectedSources.length} selected
+                      </span>
+                    )}
+                  </div>
+
+                  {/* Selected Source Tags */}
+                  <div
+                    className="p-2 border rounded bg-light mb-2 d-flex flex-wrap gap-1 align-items-center"
+                    style={{ minHeight: '38px', maxHeight: '90px', overflowY: 'auto' }}
+                  >
+                    {selectedSources.length === 0 ? (
+                      <span className="text-muted small fst-italic">
+                        No trade sources selected. Choose from dropdown below.
+                      </span>
+                    ) : (
+                      selectedSources.map((src) => (
+                        <span
+                          key={src}
+                          className="badge bg-white text-dark border shadow-sm d-inline-flex align-items-center gap-1.5 py-1.5 px-2"
+                          style={{ fontSize: '0.8rem' }}
+                        >
+                          <span>{src}</span>
+                          <button
+                            type="button"
+                            className="btn-close btn-close-sm"
+                            style={{ fontSize: '0.65rem' }}
+                            onClick={() => handleRemoveSource(src)}
+                            title={`Remove ${src}`}
+                            aria-label={`Remove ${src}`}
+                          />
+                        </span>
+                      ))
+                    )}
+                  </div>
+
+                  {/* Add / Select Control */}
                   {!isAddingNewSource ? (
-                    <div className="input-group">
+                    <div className="input-group input-group-sm">
                       <select
                         className="form-select"
-                        value={tradeSource}
+                        value=""
                         onChange={(e) => {
-                          if (e.target.value === '__add_new__') {
+                          const val = e.target.value;
+                          if (val === '__add_new__') {
                             setIsAddingNewSource(true);
-                          } else {
-                            setTradeSource(e.target.value);
+                          } else if (val) {
+                            handleToggleSource(val);
                           }
                         }}
                       >
-                        <option value="">-- Select Trade Source --</option>
-                        {sources.map((src) => (
-                          <option key={src} value={src}>
-                            {src}
-                          </option>
-                        ))}
-                        <option value="__add_new__">+ Add New Source...</option>
+                        <option value="">+ Add / Toggle Trade Source...</option>
+                        {sources.map((src) => {
+                          const isSel = selectedSources.includes(src);
+                          return (
+                            <option key={src} value={src}>
+                              {isSel ? `✓ ${src} (selected - click to remove)` : `+ ${src}`}
+                            </option>
+                          );
+                        })}
+                        <option value="__add_new__">+ Create New Source Option...</option>
                       </select>
                       <button
                         type="button"
                         className="btn btn-outline-secondary"
                         onClick={() => setIsAddingNewSource(true)}
-                        title="Add a new Trade Source option"
+                        title="Create a new Trade Source option"
                       >
                         <Plus size={14} />
                       </button>
                     </div>
                   ) : (
-                    <div className="input-group">
+                    <div className="input-group input-group-sm">
                       <input
                         type="text"
                         className="form-control"
@@ -378,7 +435,7 @@ export default function SwingTradeModal({
                         onClick={handleCreateSource}
                         disabled={isSavingSource || !newSourceName.trim()}
                       >
-                        {isSavingSource ? 'Saving...' : 'Save Source'}
+                        {isSavingSource ? 'Saving...' : 'Add & Select'}
                       </button>
                       <button
                         type="button"
@@ -393,7 +450,7 @@ export default function SwingTradeModal({
                     </div>
                   )}
                   <div className="form-text text-muted" style={{ fontSize: '0.78rem' }}>
-                    Who provided or recommended this trade setup (persisted for future rows).
+                    Select one or more sources. New options are saved permanently.
                   </div>
                 </div>
               </div>

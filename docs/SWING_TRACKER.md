@@ -29,7 +29,7 @@ All swing trade records and sources are stored in the durable SQLite database (`
         └─────────────────────┘         └───────────────────────────┘
 ```
 
-### 2.1 Database Schema (`schema_v5.sql`)
+### 2.1 Database Schema (`schema_v6.sql`)
 
 #### Table: `swing_tracker`
 | Column | Type | Description |
@@ -45,7 +45,8 @@ All swing trade records and sources are stored in the durable SQLite database (`
 | `target2` | `TEXT` | Secondary profit target or range (e.g. `1100`) |
 | `pattern_break` | `TEXT` | Technical chart pattern (e.g. `Ascending Triangle`, `Cup & Handle`) |
 | `thesis` | `TEXT` | Free-text reasoning with line breaks and formatting preserved |
-| `trade_source` | `TEXT` | Origin/provider of trade (e.g. `Self Analysis`, `Aman Sharma`) |
+| `trade_source` | `TEXT` | Origin/provider of trade (comma-separated list for multi-source attribution) |
+| `status` | `TEXT NOT NULL DEFAULT 'active'` | Position status: `'active'` or `'completed'` (indexed via `idx_swing_tracker_status`) |
 | `created_at` | `TEXT NOT NULL` | ISO 8601 creation timestamp |
 | `updated_at` | `TEXT NOT NULL` | ISO 8601 modification timestamp |
 
@@ -55,6 +56,8 @@ All swing trade records and sources are stored in the durable SQLite database (`
 | `id` | `INTEGER PRIMARY KEY AUTOINCREMENT` | Unique source identifier |
 | `name` | `TEXT NOT NULL UNIQUE` | Trade source name (persisted for future dropdown selections) |
 | `created_at` | `TEXT NOT NULL` | ISO 8601 creation timestamp |
+
+For in-depth operational workflows on Active vs Completed trades, soft-deletion, bulk deletion, and multi-source tags, see [SWING_TRACKER_WORKFLOWS.md](SWING_TRACKER_WORKFLOWS.md).
 
 ---
 
