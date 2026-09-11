@@ -26,10 +26,6 @@ function sendJson(url, method, body) {
   });
 }
 
-export async function fetchTables() {
-  return request('/api/tables');
-}
-
 export async function fetchData() {
   return request('/api/data');
 }

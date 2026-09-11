@@ -26,11 +26,6 @@ SETTINGS_FILE = CONFIG_DIR / "settings.json"
 SETTINGS_TEMPLATE_FILE = BASE_DIR / "config.template.json"
 PORTFOLIOS_FILE = CONFIG_DIR / "portfolios.json"
 
-SNAPSHOT_FILE = DATA_DIR / "snapshot.json"
-STATUS_FILE = DATA_DIR / "status.json"
-PENDING_ADDITIONS_FILE = DATA_DIR / "pending_additions.json"
-STOCK_STATUS_FILE = DATA_DIR / "stock_status.json"
-QUOTES_CACHE_FILE = DATA_DIR / "quotes_cache.json"
 SCREENER_DIR = DATA_DIR / "screener"
 SCREENER_CACHE_FILE = DATA_DIR / "screener_cache.json"
 
